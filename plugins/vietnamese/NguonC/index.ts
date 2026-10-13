@@ -18,7 +18,8 @@ class NguonCPlugin extends NekoriBasePlugin {
   name = 'NguonC';
   icon = 'icon.png';
   site = SITE;
-  version = '1.1.0';
+  version = '1.1.1';
+  minApiVersion = 2;
   customJS = 'player.js';
   contentType = ContentType.VIDEO;
 
@@ -309,20 +310,18 @@ class NguonCPlugin extends NekoriBasePlugin {
     m3u8?: string;
     embed?: string;
   }): Promise<string> {
-    const metas: string[] = [
-      '<meta name="lnreader-debug-mode" content="false">',
-    ];
+    const metas: string[] = ['<meta name="nekori-debug-mode" content="false">'];
 
     if (this.enableEmbed) {
       metas.push(
-        '<meta name="lnreader-video-mode" content="direct">',
-        '<meta name="lnreader-video-type" content="iframe">',
+        '<meta name="nekori-video-mode" content="direct">',
+        '<meta name="nekori-video-type" content="iframe">',
       );
       metas.push(
-        `<meta name="lnreader-video-url" content="${encodeHtmlEntities(opts.embed)}">`,
+        `<meta name="nekori-video-url" content="${encodeHtmlEntities(opts.embed)}">`,
       );
     } else {
-      metas.push('<meta name="lnreader-video-mode" content="lazy">');
+      metas.push('<meta name="nekori-video-mode" content="lazy">');
       const iframeObf = await this.getM3u8DataFromEmbed(opts.embed!);
       const attrs: string[] = ['id="nguonc-player-container"'];
       attrs.push(`data-iframe="${encodeHtmlEntities(opts.embed)}"`);

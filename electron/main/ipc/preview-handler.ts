@@ -1,8 +1,11 @@
-import { BrowserWindow, ipcMain } from 'electron';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { BrowserWindow, clipboard, ipcMain } from 'electron';
 import { customSession } from '../main.js';
 
 type PreviewPayload = {
   pluginId: string;
+  chapterPath: string;
   /** Full chapter document, already assembled by the renderer. */
   html: string;
   /** "Novel name - Chapter name". The document carries the same `<title>`. */
@@ -49,7 +52,7 @@ async function syncWebStorage(
 }
 
 ipcMain.handle('preview:open', (event, payload: PreviewPayload) => {
-  const { pluginId, html, title, baseUrl } = payload;
+  const { pluginId, chapterPath, html, title, baseUrl } = payload;
   const sender = event.sender;
 
   if (previewWindow && !previewWindow.isDestroyed()) previewWindow.destroy();
@@ -61,6 +64,15 @@ ipcMain.handle('preview:open', (event, payload: PreviewPayload) => {
     title: title || 'Chapter Preview',
     webPreferences: {
       session: customSession,
+      preload: process.env.VITE_DEV_SERVER_URL
+        ? path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '../../preload/reader.cjs',
+          )
+        : path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '../preload/reader.cjs',
+          ),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -88,6 +100,20 @@ ipcMain.handle('preview:open', (event, payload: PreviewPayload) => {
   });
 
   const sync = () => syncWebStorage(win, sender, pluginId);
+  const refetch = async (request: Electron.IpcMainInvokeEvent) => {
+    if (request.sender !== win.webContents)
+      throw new Error('Invalid reader sender');
+    await sync();
+    sender.send('preview:refetch', { pluginId, chapterPath });
+  };
+  ipcMain.removeHandler('preview:refetch');
+  ipcMain.handle('preview:refetch', refetch);
+  ipcMain.removeHandler('preview:copy');
+  ipcMain.handle('preview:copy', (request, text: unknown) => {
+    if (request.sender !== win.webContents || typeof text !== 'string')
+      throw new Error('Invalid clipboard request');
+    clipboard.writeText(text);
+  });
 
   // Custom JS writes storage as it runs, and there is no event for "the plugin
   // finished touching storage" — so poll while the tab is open, plus on the
@@ -101,6 +127,10 @@ ipcMain.handle('preview:open', (event, payload: PreviewPayload) => {
   win.on('close', sync);
   win.on('closed', () => {
     clearInterval(timer);
+    if (previewWindow === win) {
+      ipcMain.removeHandler('preview:refetch');
+      ipcMain.removeHandler('preview:copy');
+    }
     if (previewWindow === win) previewWindow = null;
   });
 

@@ -315,7 +315,8 @@ class SangTacVietPlugin extends NekoriBasePlugin {
   get site() {
     return DOMAINS[this.selectedDomain] || SITE;
   }
-  version = '1.1.0';
+  version = '1.1.1';
+  minApiVersion = 2;
   webStorageUtilized = true;
 
   pluginSettings: Plugin.PluginSettings = {

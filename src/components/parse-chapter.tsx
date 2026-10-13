@@ -52,6 +52,7 @@ export default function ParseChapterSection() {
             content.checkpointMessage ||
               'Chapter requires interaction. Open Preview to continue.',
           );
+        return content;
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Failed to fetch chapter';
@@ -100,21 +101,25 @@ export default function ParseChapterSection() {
     clearParseChapterPath,
   ]);
 
-  const openPreview = async () => {
-    if (!plugin || !chapterContent?.html) return;
+  const openPreview = async (content = chapterContent, path = chapterPath) => {
+    if (!plugin || !content?.html) return;
     if (!window.electronAPI) {
       toast.error('Preview requires the Electron playground');
       return;
     }
     // Only a jump from Parse Novel knows the novel and chapter names; a
     // hand-typed path falls back to the plugin name and the path itself.
-    const title = chapterTitle || `${plugin.name} - ${chapterPath}`;
+    const title = chapterTitle || `${plugin.name} - ${path}`;
     try {
       await window.electronAPI.invoke('preview:open', {
         pluginId: plugin.id,
+        chapterPath: path,
         title,
         html: buildPreviewDocument({
-          chapter: chapterContent,
+          chapter: content,
+          chapterPath: path,
+          pluginId: plugin.id,
+          sourceBaseUrl: plugin.site,
           title,
           customCSS: plugin.customCSS,
           customJS: plugin.customJS,
@@ -129,6 +134,26 @@ export default function ParseChapterSection() {
       toast.error(message);
     }
   };
+
+  useEffect(
+    () =>
+      window.electronAPI?.on?.('preview:refetch', async (value: unknown) => {
+        if (
+          !value ||
+          typeof value !== 'object' ||
+          (value as { pluginId: string }).pluginId !== plugin?.id
+        )
+          return;
+        const path = (value as { chapterPath?: unknown }).chapterPath;
+        if (typeof path !== 'string') return;
+        const content = await fetchChapterByPath(path);
+        if (content) {
+          setChapterPath(path);
+          await openPreview(content, path);
+        }
+      }),
+    [plugin, chapterPath, chapterTitle],
+  );
 
   return (
     <div className="space-y-6">
@@ -242,7 +267,11 @@ export default function ParseChapterSection() {
               <div className="flex gap-2 items-center">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button size="sm" className="gap-2" onClick={openPreview}>
+                    <Button
+                      size="sm"
+                      className="gap-2"
+                      onClick={() => void openPreview()}
+                    >
                       <ExternalLink className="w-4 h-4" />
                       Mở Preview
                     </Button>

@@ -118,7 +118,7 @@ Nekori plugins return `Promise<Plugin.ChapterContent>`. The linked templates con
 | `site` | `string` | yes | Site URL. Also the URL opened in the WebView and the base URL of the reader. |
 | `version` | `string` | yes | [SemVer 2.0](https://semver.org/). **Bump it or the publish pipeline skips your changes** (`--only-new` compares versions). |
 | `isNekoriPlugin` | `true` | inherited | Base class flag selecting the chapter contract. |
-| `minApiVersion` | `number` | inherited | Currently 1, controlled in `src/nekori/plugin.ts`; unsupported APIs prevent install/load. |
+| `minApiVersion` | `number` | inherited | Required host API version. |
 | `outputTarget` | `'js' / 'hermes' / 'all'` | no | No-op: all values currently build JS only, not HBC. |
 | `filters` | `Filters` | no | See [Filters](#filters). |
 | `pluginSettings` | `Plugin.PluginSettings` | no | See [Plugin settings](#plugin-settings-and-storage). |
@@ -152,7 +152,6 @@ class MyPlugin extends NekoriBasePlugin {
 The manifest remains a JSON array. The build reads metadata from the exported index.ts instance
 using mocked runtime APIs; there is no second hand-written metadata file. Language comes from
 the directory via scripts/languages.js; JS/icon/CSS/customJS URLs are generated from build configuration and asset paths.
-Nekori entries contain isNekoriPlugin: true and minApiVersion: 1. outputTarget does not emit HBC and is not written to the manifest yet.
 The app validates minApiVersion when present (positive integer), rejecting installation/loading above its supported API.
 Loaded code metadata determines the contract; bump the plugin version so the app offers the update.
 
@@ -527,7 +526,7 @@ npm run dev
 ```
 
 The only interactive way to test — there is no browser mode. It is not bound by
-CORS, keeps persistent cookies, and simulates the app's WebView context.
+CORS, keeps persistent cookies, and runs the copied reader runtime with an Electron host adapter.
 
 - **Spawn New Tab** (`Ctrl+T` / `Cmd+T`) opens a WebView where you can solve
   Cloudflare/Captcha by hand; the cookies are synced to plugin `fetch` calls.
@@ -559,273 +558,224 @@ console unless you attach a debugger.
 
 ## Custom CSS and JS
 
-`customJS` is written in the plugin's `webview/` folder (entry `index.ts` or
-`index.js`) and bundled to the path in the `customJS` field by
-`npm run build:assets`. `customCSS` is `webview/style.css`, copied byte-for-byte
-to the path in the `customCSS` field. Short paths resolve under
-`public/static/src/<plugin.id>/`; legacy paths containing `/` remain unchanged.
+`customJS` is bundled from `webview/index.ts` or `index.js`; `customCSS` is copied from `webview/style.css`. Rebuild assets after edits. A bare metadata filename is published under `public/static/src/<plugin.id>/`.
 
-Notes on the reader environment:
+The Electron dev client uses a checked-in copy of Nekori's built reader in `public/static/novel-reader/`, including declarations, CSS, VanJS widgets and offline media engines. There is no reader npm dependency or sibling-checkout requirement for normal builds. To refresh the snapshot, run these commands **in Nekori's app/tools/reader-runtime**, then commit the copied files in the plugin repository:
 
-- The chapter is wrapped in `<div id="LNReader-chapter">`.
-- The app processes `ChapterContent.html`, so inline `<script>` tags may not run —
-  put behaviour in `customJS`.
-- Do not infer chapter identity from `window.location`; use the reader bridge.
-  Electron previews use `plugin.site` as their base URL; Android resolves its
-  reader base URL from chapter, novel and source URLs.
-- See `src/lib/reader-mock.ts` for Electron's emulation of the reader context
-  (`window.reader`, `window.tts`, `window.pageReader`, `window.van`).
-
-Useful reader APIs (**Nekori only**):
-
-```js
-window.reader.refetch();                    // force reload, bypass cache
-window.reader.post({ type: 'refetch' });    // equivalent
-await window.reader.fetch(url, init);       // fetch without WebView restrictions
+```sh
+npm run build
+node sync-dev-client.mjs /path/to/nekori-plugins
 ```
+
+In the plugin repository, `npm run build:reader` builds the Electron adapter from those local files. `build:prepare` includes it. Open Preview runs this real runtime; F12 opens its DevTools. Native Android synthesis, AI services, downloads and chapter navigation are host responsibilities and are not implemented by this standalone preview.
+
+### Files
+
+| Path | Purpose |
+| --- | --- |
+| `public/static/novel-reader/` | Copied app `dist`: runtime, assets, styles, declarations and media vendors. Commit these files. |
+| `src/lib/reader-client.ts` | Electron host adapter. |
+| `public/static/reader-client.js` | Compiled adapter; imports `./novel-reader/index.js` directly. |
+| `src/types/webview/index.d.ts` | Imports the copied declarations for source customJS. |
+
+The copy script updates the first directory. Normal dev-client builds compile the adapter without rebuilding or copying the app runtime.
+
+### Reader API
+
+CustomJS runs in WebView, separately from the source plugin's Hermes runtime.
+Use the lowercase global `window.nekori`; `@libs/*` helpers are not injected into this document.
+`src/types/webview/index.d.ts` imports the copied app declarations.
+If you need named types from `plugins/<language>/<PluginName>/webview/index.ts`, use a type-only import:
+
+```ts
+import type { ReaderApi, DashConfig } from '../../../../public/static/novel-reader/index.js';
+```
+
+The runtime publishes the global before its controllers finish initializing.
+Wait for `ready`, and use an async function instead of top-level await because customJS is bundled as a classic IIFE:
+
+```ts
+void (async () => {
+  const reader = window.nekori;
+  if (!reader) throw new Error('Reader is unavailable');
+  await reader.ready;
+  console.info(reader.context.chapter.id, reader.context.chapter.path);
+})().catch(error => window.nekori?.error(String(error)));
+```
+
+| Member | Contract |
+| --- | --- |
+| `ready` | `Promise<void>`; runtime controllers are initialized, not necessarily fonts/images/page reflow/media playback. |
+| `context` | Live getters for document/novel/chapter/runtime/configuration data, detailed below. |
+| `config` | Current `ReaderConfig`; app-owned configuration, not a native preference setter. |
+| `events.subscribe(name, listener)` | Returns an unsubscribe function. The supported state notification is detailed below. There is no public `emit`. |
+| `layout` | `ReaderLayout` or `null`; check `enabled` before paged operations and allow `position` to be `null`. |
+| `player` | `ReaderPlayer` or `null`; ordinary text documents have no media delegate. |
+| `fetch(input, init?)` | `Promise<Response>`; host proxy using standard RequestInit and forwarded headers. Check `response.ok` yourself. |
+| `refetch()` | `void`; asks the host to reload from the source. It is not a completion promise. |
+| `error(message)` | `void`; reports a string to the host reader error channel. |
+| `dispose()` | `void`; tears down the document, owned by the embedding application. Do not use it as a source-UI cleanup helper. |
+
+#### Context, metadata and runtime
+
+`context` exposes `documentId`, `mode` (`reader`, `download`, `error`), `novel`, `chapter`, `nextChapter`, `chapters`, `runtime`, and `strings`.
+Optional configuration fields are `ui`, `style`, `layout`, and `player`; these are data, not the controllers at `reader.layout` / `reader.player`.
+Optional identity fields are `sourceBaseUrl`, `sourceId`, `novelId`, and `chapterId`; novel/chapter IDs default to the corresponding metadata IDs.
+
+| Object | Fields |
+| --- | --- |
+| `novel` | String `id`, `name`, `path`. |
+| `chapter`, `nextChapter` | String `id`, `name`, `path`; numeric `progress`; optional string `url` and numeric `number`. `nextChapter` can be null. |
+| `chapters` | Metadata supplied to this document; the Android reader supplies loaded chapters, not the full source catalog or chapter bodies. |
+| `runtime` | Boolean `editing`, `infinite`, `textSelectionBlocked`, `forcedLowercase`, `menuVisible`, `immersive`, `loadingChapter`, `loadingNext`, `noMoreChapters`; `ttsState` is `playing`, `paused`, `stopped`, or `starting`. |
+
+Native database IDs are decimal strings; do not convert them to Number.
+`path` is an opaque source identity, not an external URL to normalize or concatenate blindly.
+`chapter.progress` is host-supplied saved progress, not a live DOM scroll tracker.
+`runtime` does not expose progress/chapterProgress/currentChapterId.
+Read fresh context fields when needed; mutating these objects does not navigate, save library data, or change native preferences.
+
+#### State subscriptions
+
+`document.stateChanged` receives `{ runtime, event? }` after a host config/runtime patch, without a DOM Event/detail wrapper.
+Read the initial state before subscribing; the optional event string is a host label.
+On custom UI teardown, unsubscribe the listener:
+
+```ts
+const reader = window.nekori;
+if (reader) {
+  console.info(reader.context.runtime.ttsState);
+  const unsubscribe = reader.events.subscribe('document.stateChanged', ({ runtime }) => {
+    console.info(runtime.ttsState);
+  });
+  // Call unsubscribe() when removing the custom UI that owns this listener.
+}
+```
+
+`layout.positionChanged`, `chapter.appended`, `reader.error`, and other reader-to-native protocol events are not automatically echoed to subscriptions.
+The old `tsundoku:*` DOM events are not dispatched.
+There are no public next/previous/TTS/translation actions or private-bridge access methods on ReaderApi.
+
+#### Layout and source DOM
+
+Paged operations return booleans: `moveBy(delta, behavior?)`, `seekUnit(index, behavior?)`, `seekPercent(percent)`, `revealElement(element)`, and `reflow(preserveViewport?)`.
+Use -1/+1 for a reading-unit turn; moving forward at the loaded boundary can request another chapter.
+`seekUnit` is zero-based within the visible chapter; `seekPercent(50)` seeks halfway.
+`layout.position` has `chapterId`, `unitIndex`, `unitCount`, `firstPage`, `lastPage`, `totalPages`, and `progress` (0–1).
+A unit can be a single page or a two-page spread; wait for a non-null position when reading it.
+Use revealElement instead of scrollIntoView in paged mode.
+Leave `configure`, `prepareSilentTurn`, `finishSilentTurn`, and controller `dispose` to the embedding app.
+
+The root is `#nekori-reader` / `.nekori-reader` / `[data-nekori-reader-root]`.
+Chapters use `<nekori-chapter class="nekori-chapter">` with `data-nekori-chapter-id`, `-name`, `-number`, `-path`, and `-url` attributes across scrolling and paged layouts.
+Plain text uses `.nekori-plain-text` / `[data-nekori-plain-text="1"]`.
+Scope source CSS to chapter/plugin-owned elements and preserve the app's root/wrappers.
+Summary/feedback internals are in shadow roots; ordinary chapter selectors do not style them.
+
+Use `--reader-background-color`, `--reader-text-color`, the `--reader-*` typography/margin settings and `--md-sys-color-*` theme colors.
+There is no JavaScript theme object; read values with `getComputedStyle(document.documentElement).getPropertyValue(name)`.
+
+Enabled source customJS included in the document runs once after reader initialization.
+Only user snippets opted into append handling are rerun by native on infinite-scroll appends; source customJS is not automatically rerun.
+Use a scoped MutationObserver if your source UI needs to respond to added chapter nodes.
+Inline scripts in returned HTML are subject to the embedded-JS setting and content processing; keep source behavior in customJS.
+
+#### Fetch and refetch
+
+Use reader.fetch for HTTP(S) URLs when the reader proxy is enabled.
+It accepts a URL string, URL object or Request; relative strings must be resolved against a real source URL before proxying.
+Use native browser fetch for blob/data URLs.
+When the proxy is disabled, reader.fetch reports an actionable host error and rejects.
+
+After successful verification, call reader.refetch(): the Android host reloads the current chapter from source; Electron syncs web storage and reruns parseChapter for the preview path.
+The operation creates another document, so do not retain the old API/DOM references.
+Reader globals such as `reader`, `tts`, `pageReader`, `van`, `LNReaderPlayer`, `ReactNativeWebView`, `Tsundoku`, and `TsundokuTheme` are not supplied.
 
 ## Video plugins
 
-The app ships a Core Player built on Video.js v10, with `hls.js` for HLS and
-`dash.js` for DASH. It supports `m3u8`, `mpd`, plain video files and `iframe`,
-and brings its own control skin, seek bar and fullscreen. You do not need your
-own player, library or CSS — return HTML with the right `<meta>` tags.
-
-### Direct mode
-
-When the video URL can be extracted in plugin TypeScript:
+Return structured content with `type: 'video'`, `noCache: true`, `noPrefetch: true`. Nekori's player uses Video.js with hls.js/dash.js. New plugins use `nekori-*` metadata:
 
 ```ts
-async parseChapter(chapterPath: string): Promise<Plugin.ChapterContent> {
-  const videoUrl = 'https://example.com/video.m3u8';
-  return {
-    state: 'ready',
-    type: 'video',
-    noCache: true,
-    noPrefetch: true,
-    html: [
-      '<meta name="lnreader-video-mode" content="direct">',
-      '<meta name="lnreader-video-type" content="m3u8">',
-      `<meta name="lnreader-video-url" content="${videoUrl}">`,
-    ].join('\n'),
-  };
-}
+return {
+  state: 'ready', type: 'video', noCache: true, noPrefetch: true,
+  html: [
+    '<meta name="nekori-video-mode" content="direct">',
+    '<meta name="nekori-video-type" content="m3u8">',
+    '<meta name="nekori-video-url" content="https://example.com/video.m3u8">',
+  ].join('\n'),
+};
 ```
 
-The app builds the player and starts playback automatically.
+Direct mode starts automatically. Accepted types are `m3u8` (HLS/MSE), `mpd` (DASH), `video-file` and `iframe`. There are no hls/dash aliases. Iframe URLs must be HTTP(S) and cannot be downloaded.
 
-`lnreader-video-type` is named after the manifest extension:
-
-| type | plays with | notes |
-| --- | --- | --- |
-| `m3u8` | hls.js over MSE | Chromium has no native HLS |
-| `mpd` | dash.js | there is no `dash` alias |
-| `video-file` | plain `<video>` | mp4, m4v, mkv, webm, mov, avi, ts |
-| `iframe` | sandboxed iframe | http(s) only, cannot be downloaded |
-
-### Lazy mode
-
-When the URL can only be resolved by running JS in the WebView (Cloudflare,
-captcha, m3u8 decryption, blob URLs), or when you need to pass engine options —
-meta tags cannot carry them:
+For URLs resolved by source customJS, set `nekori-video-mode` to `lazy`, await reader.ready, then call the player. Play methods return `Promise<void>`; await initialization and catch unexpected rejections. Playback/engine failures are also reported to the host; a resolved promise does not guarantee playback:
 
 ```ts
-async parseChapter(chapterPath: string): Promise<Plugin.ChapterContent> {
-  return {
-    state: 'ready',
-    type: 'video',
-    noCache: true,
-    noPrefetch: true,
-    html: [
-      '<meta name="lnreader-video-mode" content="lazy">',
-      '<meta name="lnreader-debug-mode" content="true">', // on-screen log overlay
-    ].join('\n'),
-  };
-}
+const reader = window.nekori;
+if (!reader) throw new Error('Reader is unavailable');
+void reader.ready.then(async () => {
+  if (!reader.player) throw new Error('This chapter has no player');
+  await reader.player.playHls('https://example.com/video.m3u8', { /* standard hls.js configuration */ });
+}).catch(error => reader.error(String(error)));
 ```
 
-Then hand the URL to the player from `customJS`:
+### Player API
 
-```js
-(async function () {
-  if (!window.LNReaderPlayer) return;
-  const m3u8Url = await fetchVideoUrl();
-  window.LNReaderPlayer.playHls(m3u8Url);
-})();
-```
+| Method | Arguments |
+| --- | --- |
+| `playHls(url, config?)` | Standard hls.js configuration, including custom loaders. |
+| `playDash(url, config?)` | `{ settings?, protectionData? }`; standard dash.js objects. |
+| `playDirect(url)` | Direct video file. |
+| `playIframe(url)` | Embedded player. |
+| `log(message)` | Console log; also appends to the player overlay when debug is enabled. |
+| `setDebug(enabled)`, `toggleDebug()` | Player debug overlay. |
+| `addSubtitles(trackOrTracks)` | `Promise<void>`; one track or an array. Fields: label?, lang?, url?, content?, default?. Supply content or a URL. |
+| `dispose()` | Document lifecycle cleanup, normally owned by the reader. |
 
-### `window.LNReaderPlayer`
+Engine instances and player DOM internals are private. Pass engine settings through playHls/playDash instead of accessing hlsInstance/dashInstance.
 
-- `playDirect(url)` — static files (`.mp4`, `.webm`, …).
-- `playHls(url, hlsJsConfig?)` — `.m3u8`. The second argument is the `hls.js`
-  config object itself, passed straight to the `Hls` constructor (e.g.
-  `xhrSetup` to add an Authorization header on `.ts` fragments).
-- `playDash(url, { settings?, protectionData? })` — `.mpd`. See below.
-- `playIframe(url)` — embed an iframe.
-- `addSubtitles(tracks)` — attach external subtitle tracks. See below.
-- `log(msg)` — console log, shown as an overlay when debug mode is on.
-
-Note the asymmetry: `playHls` takes the raw hls.js config, while `playDash`
-takes a wrapper object. `playHls`'s shape predates the Video.js migration and is
-kept for compatibility.
-
-### Subtitles
-
-`addSubtitles(tracks)` takes one track or an array of them and returns a
-promise.
-
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `url` | one of the two | Subtitle file to fetch. It goes through the reader's own fetch, so it carries the same `Referer` as the video and CORS does not apply. |
-| `content` | one of the two | Subtitle text you already hold. Skips the fetch. |
-| `label` | no | Name shown in the captions menu. Defaults to `Subtitles`. |
-| `lang` | no | BCP-47 code (`vi`, `en`). Defaults to empty. |
-| `default` | no | `true` turns this track on straight away. |
-
-```js
-await window.LNReaderPlayer.playHls(m3u8Url);
-await window.LNReaderPlayer.addSubtitles([
-  { label: 'Tiếng Việt', lang: 'vi', url: subUrl, default: true },
-  { label: 'English', lang: 'en', url: enUrl },
-]);
-```
-
-Call it whenever the urls turn up — before the `play*` call, after it, or in the
-middle of playback. Tracks are remembered rather than attached once, so they
-survive a remount: switching engine or replaying re-attaches everything you
-added.
-
-WebVTT is used as-is. SubRip is converted for you: the `WEBVTT` header is added
-and the comma in cue timestamps becomes a point, while commas inside dialogue
-are left alone. Anything else — ASS/SSA in particular — has to be converted by
-the plugin and handed over through `content`.
-
-Each track is isolated. A fetch that 404s, or a file that will not parse, is
-logged to the debug overlay and skipped; the other tracks and the video itself
-carry on. Losing subtitles must never cost the user the episode.
-
-Subtitles already inside an HLS playlist (`#EXT-X-MEDIA:TYPE=SUBTITLES`) are
-handled by hls.js on its own and need no call.
-
-Downloaded chapters do not keep external subtitles yet — they are not written
-into the saved file.
-
-### Reaching the engine directly
-
-The live engine stays exposed for anything the wrapper does not cover:
-
-- `LNReaderPlayer.hlsInstance` — the `Hls` instance, after `playHls`.
-- `LNReaderPlayer.dashInstance` — the dash.js `MediaPlayer`, after `playDash`.
-
-```js
-await window.LNReaderPlayer.playDash(url, { protectionData });
-window.LNReaderPlayer.dashInstance.updateSettings({
-  streaming: { buffer: { bufferTimeAtTopQuality: 30 } },
-});
-window.LNReaderPlayer.dashInstance.on('qualityChangeRendered', onQuality);
-```
-
-`playDirect` / `playHls` / `playDash` are **async** — the custom elements they
-need may be registered by deferred module scripts — so `await` them before
-touching an instance, or you will read `null` or the previous chapter's engine.
-Both are cleared when the player is torn down.
-
-Calling `updateSettings()` yourself **merges** into the current settings, unlike
-the `settings` option below, which replaces them.
-
-Failures are shown to the user as an inline error banner in the reader — nothing
-is silently swallowed, but nothing is thrown back at your plugin either. While
-developing, read the debug overlay or attach `chrome://inspect`.
-
-Full surface: [`src/lib/assets/core-player.js`](../src/lib/assets/core-player.js).
-
-### Configuring dash.js
-
-`settings` is dash.js's own `MediaPlayerSettingClass`, handed over untouched:
-
-```js
-window.LNReaderPlayer.playDash('https://example.com/manifest.mpd', {
-  settings: {
-    streaming: {
-      abr: { autoSwitchBitrate: { video: true } },
-      buffer: { bufferTimeAtTopQuality: 30 },
-      retryAttempts: { MediaSegment: 5 },
-    },
-  },
-});
-```
-
-Settings are **replaced, not merged**: the player resets dash.js settings before
-applying yours, so a key you drop returns to its default rather than keeping the
-previous value.
-
-### DRM
-
-License servers are not part of dash.js settings — they are a separate
-`protectionData` map, keyed by key system, passed to `setProtectionData()`
-before the manifest is attached. Write standard dash.js field names; dash.js
-**silently ignores unknown keys**, so a config copied from another player will
-simply never send a license request and will die as a vague decode error.
-
-```js
-window.LNReaderPlayer.playDash(
-  'https://media.axprod.net/TestVectors/Cmaf/protected_1080p_h264_cbcs/manifest.mpd',
-  {
+```ts
+// Replace these URLs/headers with values resolved by your source.
+void (async () => {
+  const reader = window.nekori;
+  if (!reader) throw new Error('Reader is unavailable');
+  await reader.ready;
+  const player = reader.player;
+  if (!player) throw new Error('This chapter has no player');
+  await player.playDash('https://example.com/manifest.mpd', {
+    settings: { streaming: { buffer: { bufferTimeAtTopQuality: 30 } } },
     protectionData: {
       'com.widevine.alpha': {
-        serverURL: 'https://drm-widevine-licensing.axtest.net/AcquireLicense',
-        httpRequestHeaders: { 'X-AxDRM-Message': '<token>' },
-        priority: 0,
+        serverURL: 'https://example.com/license',
+        httpRequestHeaders: { Authorization: 'Bearer YOUR_TOKEN' },
       },
     },
-  },
-);
+  });
+  await player.addSubtitles({
+    label: 'English', lang: 'en',
+    url: 'https://example.com/subtitles.vtt', default: true,
+  });
+})().catch(error => window.nekori?.error(String(error)));
 ```
 
-| write this | not this |
-| --- | --- |
-| `serverURL` | `url`, `licenseUrl` |
-| `httpRequestHeaders` | `licenseHeaders`, `headers` |
+dash.js settings are replaced, not merged. Do not default a DRM robustness level: the Android WebView may reject a stricter value. Protected playback follows host permission and incognito policy; Electron DRM capability does not prove Android DRM compatibility. Subtitle content supports WebVTT and SubRip conversion; other formats must be converted by the plugin. External subtitles are not included in downloaded video files.
 
-Other useful fields: `withCredentials`, `httpTimeout`, `serverCertificate`,
-`audioRobustness`, `videoRobustness`, `distinctiveIdentifier`, `persistentState`.
-ClearKey takes inline `clearkeys` instead of a `serverURL`.
-
-Four constraints worth knowing before filing a bug:
-
-- **Do not set a robustness level unless you have measured that it works.**
-  Android WebView is Widevine **L3 only** — it never exposes a TEE decode path
-  to EME, so a device that reports L1 natively still reports L3 inside a
-  WebView. Measured ceilings vary: on one test device an empty robustness and
-  `SW_SECURE_CRYPTO` were accepted while `SW_SECURE_DECODE` was rejected with
-  `NotSupportedError`. Leaving it unset is the safe default.
-- **Content requiring L1 will not play**, no matter how it is configured.
-- **Incognito blocks Widevine.** It needs the device DRM identifier even at L3,
-  and that identifier is permanent and unresettable, so the app refuses to hand
-  it to a plugin site while incognito is on. The user sees a banner explaining
-  it. ClearKey still works.
-- **DASH and DRM chapters cannot be downloaded.** Encrypted fragments are
-  useless to the download sink, so those chapters are rejected up front rather
-  than producing an unplayable file.
-
-If DRM fails, Chromium's `It is recommended that a robustness level be
-specified` warning is *not* the cause — it prints on successful calls too.
+Subtitles can be prepared before play or added afterward; prepared tracks survive player remounts. A failed track is logged and skipped rather than rejecting the entire addSubtitles operation.
 
 ## Special meta tags
 
-Use `ChapterContent.noCache`, `noPrefetch`, `type`; Nekori plugins must not emit `no-cache-marker`, `no-prefetch-marker` or `lnreader-chapter-type`. Only the legacy adapter reads those markers. Video tags below still belong in `ChapterContent.html`.
-
-| Tag | Effect |
+| Metadata | Meaning |
 | --- | --- |
-| `<meta id="lnreader-video-disable-progress" />` | Video chapter without progress saving (e.g. live streams with no end time). Switches the player to the live skin and disables downloading. |
-| `<meta name="lnreader-video-poster" content="…" />` | Still image shown before playback starts. |
-| `<meta name="lnreader-video-thumbnails" content="…" />` | WebVTT storyboard for seek-bar preview images. See the warning below. |
+| `meta[name=nekori-video-mode]` | direct or lazy. |
+| `meta[name=nekori-video-type]` | m3u8, mpd, video-file, iframe. |
+| `meta[name=nekori-video-url]` | Direct playback URL; escape HTML attribute values. |
+| `meta#nekori-video-disable-progress` | Disable progress/live-style playback; not downloadable. |
+| `meta[name=nekori-video-poster]` | Poster image. |
+| `meta[name=nekori-video-thumbnails]` | WebVTT thumbnail storyboard. Opt-in forces anonymous CORS on the media element. |
+| `meta[name=nekori-debug-mode]` | true enables the debug overlay. |
 
-`lnreader-video-thumbnails` forces `crossorigin="anonymous"` on the media
-element. On a `video-file` chapter that **also forces a CORS fetch of the video
-itself**, so a host without `Access-Control-Allow-Origin` stops playing. Use it
-only with sources you know send CORS headers.
+The chapter's state/type/cache/prefetch policy belongs in ChapterContent, not legacy control markers. Old offline marker decoding is an app load-boundary concern.
 
 ## Captcha and blocked sites
 
-Where supported, use the site WebView for login/verification. For reader interaction (such as SangTacViet), return a checkpoint with HTML and both flags true as in the parseChapter example. Custom JS uses the existing reader bridge for interaction and reload. Checkpoints must fail downloads and must not be repeatedly appended in infinite reading. API v1 adds neither general plugin–customJS IPC nor an automatic CAPTCHA solver.
+Return a checkpoint with interaction HTML and noCache/noPrefetch true. Source customJS performs verification, then calls window.nekori.refetch(). Electron syncs preview web storage before requesting the fresh chapter. Checkpoints cannot be treated as successful downloads or prefetched completed chapters. No automatic solver or general plugin–customJS IPC is implied by this API.

@@ -1,83 +1,146 @@
 import type { Plugin } from '@/types/plugin';
 
-import corePlayerCss from './assets/core-player.css?raw';
-import corePlayerRaw from './assets/core-player.js?raw';
-import { readerMockScript } from './reader-mock';
+import type {
+  ReaderConfig,
+  VideoType,
+} from '../../public/static/novel-reader/index.js';
 
 type PreviewDocumentOptions = {
-  /** Normalized Nekori contract, including adapted LNReader responses. */
   chapter: Plugin.ChapterContent;
-  /** Shown as the preview window title, e.g. "Novel name - Chapter name". */
   title?: string;
+  chapterPath: string;
+  pluginId: string;
+  sourceBaseUrl: string;
   customCSS?: string;
   customJS?: string;
   dark?: boolean;
 };
-
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/g,
     char =>
-      ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;',
-      })[char] as string,
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
+        char
+      ] as string,
   );
-
-/** Plugin assets are served by the renderer's own origin, so make them absolute. */
 const staticUrl = (relative: string) =>
   new URL('/public/static/' + relative, window.location.origin).href;
 
-/**
- * Assembles the document handed to the preview tab. Element ids and the
- * CSS-then-chapter-then-JS order mirror the real reader WebView, so custom JS
- * that queries `#LNReader-chapter` behaves the same here.
- */
+/** Uses the app's built runtime and public config, with Electron implementing host actions. */
 export function buildPreviewDocument({
   chapter,
-  title,
+  title = 'Chapter Preview',
+  chapterPath,
+  pluginId,
+  sourceBaseUrl,
   customCSS,
   customJS,
   dark,
 }: PreviewDocumentOptions): string {
-  const { html } = chapter;
-  const video = chapter.type === 'video';
-
-  return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${escapeHtml(title || 'Chapter Preview')}</title>
-    <style>
-      body {
-        font-family: system-ui, -apple-system, sans-serif;
-        color: ${dark ? '#e5e7eb' : '#1f2937'};
-        background: ${dark ? '#0b0f19' : '#ffffff'};
-        margin: 0;
-        padding: 16px;
-        line-height: 1.6;
-      }
-      img, video, iframe { max-width: 100%; height: auto; }
-      a { color: #3b82f6; }
-      ${video ? corePlayerCss : ''}
-    </style>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dashjs@5.2.0/dist/legacy/umd/dash.all.min.js"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.0.1/video.js"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.0.1/live-video.js"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.0.1/media/hlsjs-video.js"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/cdn@10.0.1/media/dash-video.js"></script>
-    ${readerMockScript}
-    ${video ? `<script>${corePlayerRaw}</script>` : ''}
-    ${customCSS ? `<link rel="stylesheet" href="${staticUrl(customCSS)}">` : ''}
-  </head>
-  <body>
-    <div id="LNReader-chapter">${html}</div>
-    ${customJS ? `<script src="${staticUrl(customJS)}"></script>` : ''}
-  </body>
-</html>`;
+  const metadata = new DOMParser().parseFromString(chapter.html, 'text/html');
+  const meta = (name: string) =>
+    metadata.querySelector<HTMLMetaElement>('meta[name="nekori-' + name + '"]')
+      ?.content ?? '';
+  const type = meta('video-type');
+  if (type && !['m3u8', 'mpd', 'video-file', 'iframe'].includes(type))
+    throw new Error('Unsupported video type: ' + type);
+  const config: ReaderConfig = {
+    documentId: crypto.randomUUID(),
+    mode: 'reader',
+    novel: { id: pluginId, name: title, path: '' },
+    chapter: { id: '1', name: title, path: chapterPath, progress: 0 },
+    nextChapter: null,
+    chapters: [],
+    autoSaveInterval: 5000,
+    proxyEndpoint: 'lnproxy://proxy',
+    strings: {
+      close: 'Close',
+      retry: 'Retry',
+      copy: 'Copy',
+      nextChapter: 'Next chapter',
+    },
+    runtime: {
+      editing: false,
+      infinite: false,
+      textSelectionBlocked: false,
+      forcedLowercase: false,
+      menuVisible: false,
+      immersive: false,
+      ttsState: 'stopped',
+      loadingChapter: false,
+      loadingNext: false,
+      noMoreChapters: false,
+    },
+    ui: {
+      bionicEnabled: false,
+      ttsEnabled: false,
+      labels: { tts: 'TTS', imageClose: 'Close image' },
+    },
+    context: { sourceBaseUrl, sourceId: pluginId },
+    ...(chapter.type === 'video'
+      ? {
+          player: {
+            mode: 'playback' as const,
+            proxyEndpoint: 'lnproxy://proxy',
+            video: {
+              path: chapterPath,
+              progress: 0,
+              direct: meta('video-mode') === 'direct',
+              type: type ? (type as VideoType) : undefined,
+              url: meta('video-url'),
+              poster: meta('video-poster'),
+              thumbnailsVtt: meta('video-thumbnails'),
+              disableProgress: !!metadata.querySelector(
+                '#nekori-video-disable-progress',
+              ),
+              debug: meta('debug-mode') === 'true',
+            },
+          },
+        }
+      : {}),
+  };
+  config.chapters = [config.chapter];
+  const assets = 'novel-reader/';
+  return (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<title>' +
+    escapeHtml(title) +
+    '</title>' +
+    '<link rel="stylesheet" href="' +
+    staticUrl(assets + 'styles/reader.css') +
+    '">' +
+    '<style>:root { --reader-font-size: 18px; --reader-font-family: system-ui; --reader-line-height: 1.6; --reader-margin-top: 16px; --reader-margin-bottom: 16px; --reader-margin-left: 16px; --reader-margin-right: 16px; --reader-text-align: start; --reader-user-select: text; --reader-text-color: ' +
+    (dark ? '#e5e7eb' : '#1f2937') +
+    '; --reader-background-color: ' +
+    (dark ? '#0b0f19' : '#ffffff') +
+    '; --md-sys-color-primary: #8252ff; --md-sys-color-error: ' +
+    (dark ? '#ffb4ab' : '#ba1a1a') +
+    '; }</style>' +
+    (chapter.type === 'video'
+      ? '<script src="' +
+        staticUrl(assets + 'vendor/hls.min.js') +
+        '"></script><script src="' +
+        staticUrl(assets + 'vendor/videojs.min.js') +
+        '"></script>'
+      : '') +
+    (customCSS
+      ? '<link rel="stylesheet" href="' + staticUrl(customCSS) + '">'
+      : '') +
+    '<script id="nekori-reader-config" type="application/json">' +
+    JSON.stringify(config).replace(/</g, '\u003c') +
+    '</script></head><body>' +
+    '<main id="nekori-reader" class="nekori-reader" data-nekori-reader-root><nekori-chapter class="nekori-chapter" data-nekori-chapter-id="1" data-nekori-chapter-path="' +
+    escapeHtml(chapterPath) +
+    '">' +
+    chapter.html +
+    '</nekori-chapter></main>' +
+    (customJS
+      ? '<script id="nekori-source-script" type="application/json" data-src="' +
+        staticUrl(customJS) +
+        '"></script>'
+      : '') +
+    '<script type="module" src="' +
+    staticUrl('reader-client.js') +
+    '"></script></body></html>'
+  );
 }

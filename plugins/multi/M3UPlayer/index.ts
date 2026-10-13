@@ -132,7 +132,8 @@ class M3UPlayerPlugin extends NekoriBasePlugin {
   id = 'yuneko.m3uplayer';
   name = 'M3U Player';
   icon = 'icon.png';
-  version = '1.1.0';
+  version = '1.1.1';
+  minApiVersion = 2;
   contentType = ContentType.VIDEO;
 
   pluginSettings: Plugin.PluginSettings = {
@@ -231,10 +232,10 @@ class M3UPlayerPlugin extends NekoriBasePlugin {
       noPrefetch: true,
       type: 'video',
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        '<meta name="lnreader-video-type" content="m3u8">',
-        `<meta name="lnreader-video-url" content="${url}">`,
-        '<meta id="lnreader-video-disable-progress"/>',
+        '<meta name="nekori-video-mode" content="direct">',
+        '<meta name="nekori-video-type" content="m3u8">',
+        `<meta name="nekori-video-url" content="${url}">`,
+        '<meta id="nekori-video-disable-progress"/>',
       ].join('\n'),
       state: 'ready',
     };

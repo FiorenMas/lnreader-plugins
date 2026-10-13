@@ -140,6 +140,8 @@ export default tseslint.config(
   prettierConfig,
   {
     ignores: [
+      'public/static/novel-reader/**',
+      'public/static/reader-client.js',
       '.js',
       'public/static',
       'docs',

@@ -15,14 +15,14 @@ import { load as loadCheerio } from 'cheerio';
 import { Plugin } from '@/types/plugin';
 
 // https://t.me/s/newtoki_url
-const SITE = 'https://toki31.com';
+const SITE = 'https://toki34.com';
 
 class NewtokiPlugin extends NekoriBasePlugin {
   id = 'newtoki.novel';
   name = 'Newtoki';
   icon = 'icon.png';
   site = SITE;
-  version = '1.1.0';
+  version = '1.1.1';
 
   imageRequestInit: Plugin.ImageRequestInit = {
     headers: {

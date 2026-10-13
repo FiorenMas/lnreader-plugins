@@ -81,7 +81,8 @@ class KKPhimPlugin extends NekoriBasePlugin {
   name = 'KKPhim';
   icon = 'icon.png';
   site = SITE;
-  version = '1.0.7';
+  version = '1.0.8';
+  minApiVersion = 2;
   customJS = 'player.js';
   contentType = ContentType.VIDEO;
 
@@ -210,7 +211,7 @@ class KKPhimPlugin extends NekoriBasePlugin {
       noCache: true,
       noPrefetch: true,
       html: [
-        '<meta name="lnreader-video-mode" content="lazy">',
+        '<meta name="nekori-video-mode" content="lazy">',
         `<div id="kkphim-player-container" data-m3u8="${escapedUrl}" data-ad-blocker="${this.enableAdBlocker}" style="display:none;"></div>`,
       ].join('\n'),
     };

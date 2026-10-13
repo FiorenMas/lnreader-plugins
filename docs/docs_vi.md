@@ -121,7 +121,7 @@ Plugin Nekori trả `Promise<Plugin.ChapterContent>`. Hai template được liê
 | `site` | `string` | có | URL trang web. Cũng là URL mở trong WebView và là base URL của Reader. |
 | `version` | `string` | có | Theo [SemVer 2.0](https://semver.org/). **Phải tăng version, nếu không pipeline sẽ bỏ qua thay đổi của bạn** (`--only-new` so sánh version). |
 | `isNekoriPlugin` | `true` | kế thừa | Base class đặt; host dùng để chọn contract chương. |
-| `minApiVersion` | `number` | kế thừa | Hiện là 1, đặt tập trung ở `src/nekori/plugin.ts`; API không hỗ trợ bị từ chối cài/chạy. |
+| `minApiVersion` | `number` | kế thừa | API host tối thiểu yêu cầu. |
 | `outputTarget` | `'js' / 'hermes' / 'all'` | không | No-op: hiện mọi giá trị đều chỉ build JS, chưa có HBC. |
 | `filters` | `Filters` | không | Xem [Bộ lọc](#bộ-lọc-filters). |
 | `pluginSettings` | `Plugin.PluginSettings` | không | Xem [Plugin settings](#plugin-settings-và-storage). |
@@ -155,7 +155,6 @@ class MyPlugin extends NekoriBasePlugin {
 Manifest vẫn là mảng JSON. Build đọc metadata từ instance export trong index.ts bằng runtime mock,
 không duy trì thêm bản metadata viết tay. Language được lấy từ thư mục qua scripts/languages.js;
 URL JS/icon/CSS/customJS được sinh từ cấu hình build và đường dẫn asset.
-Mỗi entry Nekori có isNekoriPlugin: true và minApiVersion: 1. outputTarget chưa sinh HBC và chưa được ghi vào manifest.
 App kiểm tra minApiVersion nếu có (số nguyên dương), từ chối cài/chạy API mới hơn mức hỗ trợ.
 Khi nạp plugin, metadata trong code là nguồn xác định contract; tăng version để app nhận bản cập nhật.
 
@@ -567,269 +566,224 @@ npm run serve:dev
 
 ## Custom CSS và JS
 
-`customJS` được viết trong thư mục `webview/` của plugin (entry là `index.ts`
-hoặc `index.js`), rồi `npm run build:assets` sẽ bundle ra đúng đường dẫn ghi
-trong trường `customJS`. `customCSS` là `webview/style.css`, được copy nguyên
-byte tới đường dẫn trong trường `customCSS`. Cả hai đường dẫn metadata vẫn
-đường dẫn ngắn nằm dưới `public/static/src/<plugin.id>/`, còn đường dẫn cũ có
-chứa `/` vẫn giữ nguyên.
+`customJS` được bundle từ `webview/index.ts` hoặc `index.js`; `customCSS` được chép nguyên từ `webview/style.css`. Build lại assets sau khi sửa. Tên metadata không có đường dẫn được xuất dưới `public/static/src/<plugin.id>/`.
 
-Lưu ý về môi trường Reader:
+Electron dev client dùng bản build được chép vào `public/static/novel-reader/`: runtime, declarations, CSS, widget VanJS và media engines offline. Build bình thường không cần repo Nekori bên cạnh hoặc npm dependency reader. Để cập nhật, chạy **trong app/tools/reader-runtime của Nekori**, rồi commit các file đã chép trong repo plugins:
 
-- Nội dung chương được bọc trong `<div id="LNReader-chapter">`.
-- App xử lý `ChapterContent.html`, nên thẻ `<script>` nội tuyến có
-  thể không chạy — hãy đưa logic vào `customJS`.
-- Không suy ra danh tính chương từ `window.location`; dùng bridge reader.
-  Preview Electron dùng `plugin.site` làm base URL; Android chọn base URL từ
-  URL chương, truyện và nguồn.
-- Xem `src/lib/reader-mock.ts` để biết ngữ cảnh JS mà ứng dụng cung cấp
-  (`window.reader`, `window.tts`, `window.pageReader`, `window.van`).
-
-Một số API hữu ích (**chỉ Nekori**):
-
-```js
-window.reader.refetch();                    // buộc tải lại, bỏ qua cache
-window.reader.post({ type: 'refetch' });    // tương đương
-await window.reader.fetch(url, init);       // fetch bỏ qua giới hạn của WebView
+```sh
+npm run build
+node sync-dev-client.mjs /duong-dan/nekori-plugins
 ```
+
+Trong repo plugins, `npm run build:reader` build adapter Electron từ các file cục bộ này; `build:prepare` đã gọi bước đó. Open Preview chạy runtime thật; F12 mở DevTools. Tổng hợp giọng nói Android, dịch/tóm tắt AI, tải chương và điều hướng giữa các chương thuộc host, chưa được triển khai trong preview độc lập này.
+
+### Cấu trúc file
+
+| Đường dẫn | Vai trò |
+| --- | --- |
+| `public/static/novel-reader/` | Bản `dist` chép từ app: runtime, assets, styles, declarations và media vendors. Commit các file này. |
+| `src/lib/reader-client.ts` | Adapter host Electron. |
+| `public/static/reader-client.js` | Adapter đã compile; import trực tiếp `./novel-reader/index.js`. |
+| `src/types/webview/index.d.ts` | Import declarations đã chép cho customJS của source. |
+
+Script chép cập nhật thư mục đầu tiên. Build dev client chỉ compile adapter, không build lại hay chép thêm runtime app.
+
+### Reader API
+
+CustomJS chạy trong WebView, tách với Hermes dùng cho source plugin.
+Dùng global viết thường `window.nekori`; các helper `@libs/*` không được inject vào tài liệu này.
+`src/types/webview/index.d.ts` import declarations đã build từ app.
+Khi cần type có tên trong `plugins/<language>/<PluginName>/webview/index.ts`, dùng type-only import:
+
+```ts
+import type { ReaderApi, DashConfig } from '../../../../public/static/novel-reader/index.js';
+```
+
+Global được tạo trước khi các controller khởi tạo xong.
+Đợi `ready`, dùng hàm async thay top-level await vì customJS được bundle thành classic IIFE:
+
+```ts
+void (async () => {
+  const reader = window.nekori;
+  if (!reader) throw new Error('Reader chưa sẵn sàng');
+  await reader.ready;
+  console.info(reader.context.chapter.id, reader.context.chapter.path);
+})().catch(error => window.nekori?.error(String(error)));
+```
+
+| Thành viên | Hợp đồng |
+| --- | --- |
+| `ready` | `Promise<void>`; controller đã khởi tạo, chưa đảm bảo font/ảnh/reflow/phát video hoàn tất. |
+| `context` | Getter cho dữ liệu document/novel/chapter/runtime/cấu hình hiện tại; xem bên dưới. |
+| `config` | `ReaderConfig` hiện tại, thuộc app; không phải setter preference native. |
+| `events.subscribe(name, listener)` | Trả hàm unsubscribe. Thông báo state được mô tả bên dưới. Không có public emit. |
+| `layout` | `ReaderLayout` hoặc null; kiểm tra enabled trước khi dùng phân trang và chấp nhận position có thể null. |
+| `player` | `ReaderPlayer` hoặc null; tài liệu văn bản thông thường không có media delegate. |
+| `fetch(input, init?)` | `Promise<Response>`; proxy host dùng RequestInit chuẩn, chuyển tiếp headers. Tự kiểm tra response.ok. |
+| `refetch()` | `void`; yêu cầu host lấy lại từ source, không trả Promise hoàn tất. |
+| `error(message)` | `void`; gửi chuỗi lỗi vào kênh reader error của host. |
+| `dispose()` | `void`; dọn tài liệu, do ứng dụng nhúng quản lý. Không dùng để dọn riêng UI của source. |
+
+#### Context, metadata và runtime
+
+`context` có `documentId`, `mode` (reader/download/error), `novel`, `chapter`, `nextChapter`, `chapters`, `runtime`, `strings`.
+Các trường cấu hình tùy chọn là `ui`, `style`, `layout`, `player`; đây là dữ liệu, khác controller tại reader.layout / reader.player.
+Các trường định danh tùy chọn là `sourceBaseUrl`, `sourceId`, `novelId`, `chapterId`; novel/chapter ID mặc định lấy từ metadata tương ứng.
+
+| Đối tượng | Các trường |
+| --- | --- |
+| `novel` | Chuỗi id, name, path. |
+| `chapter`, `nextChapter` | Chuỗi id, name, path; số progress; url dạng chuỗi và number dạng số là tùy chọn. nextChapter có thể null. |
+| `chapters` | Metadata được cấp cho tài liệu; reader Android cấp các chương đã nạp, không phải toàn bộ mục lục source hoặc nội dung chương. |
+| `runtime` | Boolean editing, infinite, textSelectionBlocked, forcedLowercase, menuVisible, immersive, loadingChapter, loadingNext, noMoreChapters; ttsState là playing/paused/stopped/starting. |
+
+ID database native là chuỗi số; không đổi thành Number.
+Path là định danh nguyên gốc của source, không phải URL ngoài để tự chuẩn hóa hoặc nối chuỗi tùy ý.
+Chapter.progress là tiến độ đã lưu do host cấp, không phải bộ theo dõi cuộn DOM tức thời.
+Runtime không có progress/chapterProgress/currentChapterId.
+Đọc context mới khi cần; sửa các đối tượng này không điều hướng, lưu thư viện hoặc thay preference native.
+
+#### Theo dõi state
+
+`document.stateChanged` nhận `{ runtime, event? }` sau khi host cập nhật config/runtime, không có lớp DOM Event/detail.
+Đọc state ban đầu trước khi subscribe; chuỗi event tùy chọn là nhãn của host.
+Unsubscribe khi gỡ UI sở hữu listener:
+
+```ts
+const reader = window.nekori;
+if (reader) {
+  console.info(reader.context.runtime.ttsState);
+  const unsubscribe = reader.events.subscribe('document.stateChanged', ({ runtime }) => {
+    console.info(runtime.ttsState);
+  });
+  // Gọi unsubscribe() khi gỡ UI tùy chỉnh sở hữu listener này.
+}
+```
+
+Các protocol event reader gửi về native như layout.positionChanged, chapter.appended, reader.error không tự phát lại cho subscriber.
+Các DOM event tsundoku:* cũ đã bỏ.
+ReaderApi không có public actions cho chương trước/sau, TTS, dịch hoặc phương thức truy cập bridge riêng.
+
+#### Layout và DOM source
+
+Các thao tác phân trang trả boolean: `moveBy(delta, behavior?)`, `seekUnit(index, behavior?)`, `seekPercent(percent)`, `revealElement(element)`, `reflow(preserveViewport?)`.
+Dùng -1/+1 để chuyển một đơn vị đọc; chuyển tới sau tại ranh giới đã nạp có thể yêu cầu chương khác.
+SeekUnit bắt đầu từ 0 trong chương đang thấy; seekPercent(50) là một nửa.
+Layout.position có chapterId, unitIndex, unitCount, firstPage, lastPage, totalPages, progress (0–1).
+Một đơn vị là một trang hoặc spread hai trang; đợi position khác null khi đọc nó.
+Dùng revealElement thay scrollIntoView trong phân trang.
+Để app quản lý configure, prepareSilentTurn, finishSilentTurn và dispose của controller.
+
+Root là `#nekori-reader` / `.nekori-reader` / `[data-nekori-reader-root]`.
+Chương dùng `<nekori-chapter class="nekori-chapter">` với data-nekori-chapter-id, -name, -number, -path, -url ở cả layout cuộn và phân trang.
+Plain text dùng `.nekori-plain-text` / `[data-nekori-plain-text="1"]`.
+Giới hạn CSS vào chương hoặc phần tử riêng của plugin, giữ root/wrapper của app.
+Phần trong summary/feedback nằm ở shadow root; selector chương thông thường không style được chúng.
+
+Dùng --reader-background-color, --reader-text-color, các biến font/margin --reader-* và màu theme --md-sys-color-*.
+Không có JavaScript theme object; đọc giá trị qua getComputedStyle(document.documentElement).getPropertyValue(name).
+
+Source customJS được bật và đưa vào tài liệu chạy một lần sau khi reader khởi tạo.
+Chỉ user snippet bật chạy khi append mới được native gọi lại; source customJS không tự chạy lại khi cuộn vô hạn nối chương.
+Dùng MutationObserver giới hạn trong vùng cần thiết nếu UI source phải phản ứng với node chương mới.
+Inline script trong HTML chịu thiết lập embedded JS và bước xử lý nội dung; đặt hành vi source vào customJS.
+
+#### Fetch và refetch
+
+Dùng reader.fetch cho URL HTTP(S) khi proxy reader được bật.
+Nó nhận chuỗi URL, đối tượng URL hoặc Request; resolve chuỗi tương đối theo URL source thật trước khi proxy.
+Dùng fetch trình duyệt cho blob/data URL.
+Khi tắt proxy, reader.fetch gửi lỗi có hướng dẫn xử lý đến host và reject.
+
+Sau xác minh thành công, gọi reader.refetch(): host Android lấy lại chương hiện tại từ source; Electron đồng bộ web storage rồi gọi parseChapter với path preview.
+Thao tác tạo tài liệu khác, nên không giữ lại API/DOM cũ.
+Các globals reader, tts, pageReader, van, LNReaderPlayer, ReactNativeWebView, Tsundoku, TsundokuTheme không được cung cấp.
 
 ## Plugin Video (Anime)
 
-Ứng dụng có sẵn Core Player dựa trên Video.js v10, dùng `hls.js` cho HLS và
-`dash.js` cho DASH. Hỗ trợ `m3u8`, `mpd`, file video thường và `iframe`, kèm sẵn
-bộ điều khiển, thanh tua và fullscreen. Bạn **không cần** tự viết CSS hay nhúng
-thư viện ngoài — chỉ cần trả về HTML chứa các thẻ `<meta>` đúng quy chuẩn.
-
-### Phương thức 1: Direct Mode (phát trực tiếp)
-
-Dành cho trang mà bạn bóc tách được link video ngay trong TypeScript của plugin:
+Trả ChapterContent với `type: 'video'`, `noCache: true`, `noPrefetch: true`. Player Nekori dùng Video.js cùng hls.js/dash.js. Plugin mới dùng metadata `nekori-*`:
 
 ```ts
-async parseChapter(chapterPath: string): Promise<Plugin.ChapterContent> {
-  const videoUrl = 'https://example.com/video.m3u8';
-  return {
-    state: 'ready',
-    type: 'video',
-    noCache: true,
-    noPrefetch: true,
-    html: [
-      '<meta name="lnreader-video-mode" content="direct">',
-      '<meta name="lnreader-video-type" content="m3u8">',
-      `<meta name="lnreader-video-url" content="${videoUrl}">`,
-    ].join('\n'),
-  };
-}
+return {
+  state: 'ready', type: 'video', noCache: true, noPrefetch: true,
+  html: [
+    '<meta name="nekori-video-mode" content="direct">',
+    '<meta name="nekori-video-type" content="m3u8">',
+    '<meta name="nekori-video-url" content="https://example.com/video.m3u8">',
+  ].join('\n'),
+};
 ```
 
-Ứng dụng sẽ tự khởi tạo Player và phát ngay.
+Direct tự phát. Các type được chấp nhận: `m3u8` (HLS/MSE), `mpd` (DASH), `video-file`, `iframe`. Không có alias hls/dash. Iframe chỉ nhận HTTP(S), không tải xuống được.
 
-`lnreader-video-type` đặt tên theo đuôi manifest:
-
-| type | phát bằng | ghi chú |
-| --- | --- | --- |
-| `m3u8` | hls.js qua MSE | Chromium không có HLS native |
-| `mpd` | dash.js | không có alias `dash` |
-| `video-file` | `<video>` thường | mp4, m4v, mkv, webm, mov, avi, ts |
-| `iframe` | iframe sandbox | chỉ http(s), không tải xuống được |
-
-### Phương thức 2: Lazy Mode (phát trì hoãn)
-
-Dành cho trang phức tạp, cần chạy JS trong WebView (bypass Cloudflare, vượt
-captcha, tự giải mã m3u8, tạo blob), hoặc khi cần truyền tuỳ chọn cho engine —
-thẻ meta không mang được chúng:
+Nếu customJS mới lấy được URL, đặt `nekori-video-mode` là `lazy`, đợi ready rồi gọi player. Các hàm phát trả `Promise<void>`; await khởi tạo và catch các rejection ngoài dự kiến. Lỗi phát/engine còn được báo đến host; Promise resolve không đảm bảo đang phát:
 
 ```ts
-async parseChapter(chapterPath: string): Promise<Plugin.ChapterContent> {
-  return {
-    state: 'ready',
-    type: 'video',
-    noCache: true,
-    noPrefetch: true,
-    html: [
-      '<meta name="lnreader-video-mode" content="lazy">',
-      '<meta name="lnreader-debug-mode" content="true">', // hiện log overlay trên màn hình
-    ].join('\n'),
-  };
-}
+const reader = window.nekori;
+if (!reader) throw new Error('Reader chưa sẵn sàng');
+void reader.ready.then(async () => {
+  if (!reader.player) throw new Error('Chương không có player');
+  await reader.player.playHls('https://example.com/video.m3u8', { /* cấu hình hls.js chuẩn */ });
+}).catch(error => reader.error(String(error)));
 ```
 
-Sau đó truyền link cho player từ `customJS`:
+### Player API
 
-```js
-(async function () {
-  if (!window.LNReaderPlayer) return;
-  const m3u8Url = await fetchVideoUrl();
-  window.LNReaderPlayer.playHls(m3u8Url);
-})();
-```
+| Hàm | Tham số |
+| --- | --- |
+| `playHls(url, config?)` | Cấu hình hls.js chuẩn, gồm custom loader. |
+| `playDash(url, config?)` | `{ settings?, protectionData? }` theo dash.js chuẩn. |
+| `playDirect(url)` | File video trực tiếp. |
+| `playIframe(url)` | Player nhúng. |
+| `log(message)` | Log console; thêm vào overlay player khi bật debug. |
+| `setDebug(enabled)`, `toggleDebug()` | Overlay debug. |
+| `addSubtitles(trackOrTracks)` | `Promise<void>`; một track hoặc mảng. Trường: label?, lang?, url?, content?, default?. Cấp content hoặc URL. |
+| `dispose()` | Dọn khi đóng tài liệu; thường do reader quản lý. |
 
-### API của `window.LNReaderPlayer`
+Engine instance và DOM nội bộ là private. Truyền cấu hình qua playHls/playDash thay vì truy cập hlsInstance/dashInstance.
 
-- `playDirect(url)` — phát file/URL tĩnh như `.mp4`, `.webm`, …
-- `playHls(url, hlsJsConfig?)` — phát `.m3u8`. Tham số thứ hai **chính là** object
-  cấu hình `hls.js`, truyền thẳng vào constructor `Hls` (ví dụ dùng `xhrSetup` để
-  chèn header Authorization khi stream các fragment `.ts`).
-- `playDash(url, { settings?, protectionData? })` — phát `.mpd`. Xem bên dưới.
-- `playIframe(url)` — nhúng iframe.
-- `addSubtitles(tracks)` — gắn phụ đề rời. Xem bên dưới.
-- `log(msg)` — ghi log ra console; nếu bật debug mode thì hiện dạng overlay.
-
-Lưu ý chỗ không đối xứng: `playHls` nhận thẳng config hls.js, còn `playDash`
-nhận object bao ngoài. Hình dạng của `playHls` có từ trước khi chuyển sang
-Video.js và được giữ lại để tương thích.
-
-### Phụ đề rời
-
-`addSubtitles(tracks)` nhận một track hoặc một mảng track, trả về promise.
-
-| Field | Bắt buộc | Ý nghĩa |
-| --- | --- | --- |
-| `url` | một trong hai | File phụ đề cần tải. Đi qua fetch riêng của reader nên mang sẵn `Referer` giống video và không dính CORS. |
-| `content` | một trong hai | Text phụ đề bạn đã có sẵn. Có cái này thì bỏ qua bước tải. |
-| `label` | không | Tên hiện trong menu phụ đề. Mặc định `Subtitles`. |
-| `lang` | không | Mã BCP-47 (`vi`, `en`). Mặc định rỗng. |
-| `default` | không | `true` là bật track này ngay. |
-
-```js
-await window.LNReaderPlayer.playHls(m3u8Url);
-await window.LNReaderPlayer.addSubtitles([
-  { label: 'Tiếng Việt', lang: 'vi', url: subUrl, default: true },
-  { label: 'English', lang: 'en', url: enUrl },
-]);
-```
-
-Gọi lúc nào cũng được — trước lời gọi `play*`, sau nó, hay giữa lúc đang phát.
-Track được **nhớ lại** chứ không chỉ gắn một lần, nên nó sống qua remount: đổi
-engine hay phát lại thì mọi track bạn thêm đều được gắn lại.
-
-WebVTT dùng thẳng. SubRip được tự chuyển đổi: thêm header `WEBVTT` và đổi dấu
-phẩy trong timestamp thành dấu chấm, còn dấu phẩy trong lời thoại giữ nguyên.
-Định dạng khác — nhất là ASS/SSA — plugin phải tự chuyển rồi truyền qua
-`content`.
-
-Mỗi track được cô lập riêng. Tải lỗi 404, hay file không parse được, thì ghi log
-ra debug overlay rồi bỏ qua; các track còn lại và bản thân video vẫn chạy. Mất
-phụ đề không bao giờ được kéo theo mất luôn tập phim.
-
-Phụ đề đã nằm sẵn trong playlist HLS (`#EXT-X-MEDIA:TYPE=SUBTITLES`) do hls.js
-tự xử lý, không cần gọi gì.
-
-Chương đã tải về chưa giữ được phụ đề rời — chúng không được ghi vào file lưu.
-
-### Truy cập thẳng engine
-
-Engine đang chạy vẫn được expose cho những thứ lớp bao ngoài không phủ hết:
-
-- `LNReaderPlayer.hlsInstance` — instance `Hls`, sau khi gọi `playHls`.
-- `LNReaderPlayer.dashInstance` — `MediaPlayer` của dash.js, sau khi gọi `playDash`.
-
-```js
-await window.LNReaderPlayer.playDash(url, { protectionData });
-window.LNReaderPlayer.dashInstance.updateSettings({
-  streaming: { buffer: { bufferTimeAtTopQuality: 30 } },
-});
-window.LNReaderPlayer.dashInstance.on('qualityChangeRendered', onQuality);
-```
-
-`playDirect` / `playHls` / `playDash` là **async** — các custom element chúng cần
-có thể được đăng ký bởi script module bị defer — nên phải `await` trước khi chạm
-vào instance, nếu không bạn sẽ đọc phải `null` hoặc engine của chương trước. Cả
-hai được xoá khi player bị huỷ.
-
-Tự gọi `updateSettings()` sẽ **merge** vào settings hiện tại, khác với tuỳ chọn
-`settings` bên dưới — cái đó thay thế toàn bộ.
-
-Lỗi được hiển thị cho người dùng dưới dạng banner ngay trong Reader — không có
-gì bị nuốt im lặng, nhưng cũng không có gì ném ngược về plugin của bạn. Khi phát
-triển, hãy đọc overlay debug hoặc cắm `chrome://inspect`.
-
-Toàn bộ API: [`src/lib/assets/core-player.js`](../src/lib/assets/core-player.js).
-
-### Cấu hình dash.js
-
-`settings` chính là `MediaPlayerSettingClass` của dash.js, truyền nguyên vẹn:
-
-```js
-window.LNReaderPlayer.playDash('https://example.com/manifest.mpd', {
-  settings: {
-    streaming: {
-      abr: { autoSwitchBitrate: { video: true } },
-      buffer: { bufferTimeAtTopQuality: 30 },
-      retryAttempts: { MediaSegment: 5 },
-    },
-  },
-});
-```
-
-Settings bị **thay thế, không merge**: player reset settings của dash.js trước
-khi áp cái của bạn, nên key nào bạn bỏ đi sẽ về mặc định chứ không giữ giá trị cũ.
-
-### DRM
-
-License server **không** thuộc settings của dash.js — nó là map `protectionData`
-riêng, khoá theo key system, được truyền vào `setProtectionData()` trước khi gắn
-manifest. Hãy viết đúng tên field chuẩn của dash.js; dash.js **im lặng bỏ qua**
-key lạ, nên config copy từ player khác sẽ không bao giờ gửi license request và
-chết bằng một lỗi decode mơ hồ.
-
-```js
-window.LNReaderPlayer.playDash(
-  'https://media.axprod.net/TestVectors/Cmaf/protected_1080p_h264_cbcs/manifest.mpd',
-  {
+```ts
+// Thay URL/headers bên dưới bằng giá trị source lấy được.
+void (async () => {
+  const reader = window.nekori;
+  if (!reader) throw new Error('Reader chưa sẵn sàng');
+  await reader.ready;
+  const player = reader.player;
+  if (!player) throw new Error('Chương không có player');
+  await player.playDash('https://example.com/manifest.mpd', {
+    settings: { streaming: { buffer: { bufferTimeAtTopQuality: 30 } } },
     protectionData: {
       'com.widevine.alpha': {
-        serverURL: 'https://drm-widevine-licensing.axtest.net/AcquireLicense',
-        httpRequestHeaders: { 'X-AxDRM-Message': '<token>' },
-        priority: 0,
+        serverURL: 'https://example.com/license',
+        httpRequestHeaders: { Authorization: 'Bearer YOUR_TOKEN' },
       },
     },
-  },
-);
+  });
+  await player.addSubtitles({
+    label: 'Tiếng Việt', lang: 'vi',
+    url: 'https://example.com/subtitles.vtt', default: true,
+  });
+})().catch(error => window.nekori?.error(String(error)));
 ```
 
-| viết thế này | không phải |
-| --- | --- |
-| `serverURL` | `url`, `licenseUrl` |
-| `httpRequestHeaders` | `licenseHeaders`, `headers` |
+Settings dash.js được thay thế, không merge. Không đặt DRM robustness mặc định: WebView Android có thể từ chối mức cao hơn. Protected playback tuân theo permission/incognito của host; DRM chạy trong Electron không chứng minh tương thích Android. Phụ đề hỗ trợ WebVTT và chuyển SubRip; plugin tự chuyển các định dạng khác. Phụ đề ngoài chưa được ghi vào file video tải xuống.
 
-Field hữu ích khác: `withCredentials`, `httpTimeout`, `serverCertificate`,
-`audioRobustness`, `videoRobustness`, `distinctiveIdentifier`, `persistentState`.
-ClearKey dùng `clearkeys` nội tuyến thay cho `serverURL`.
-
-Bốn ràng buộc nên biết trước khi báo lỗi:
-
-- **Đừng đặt robustness trừ khi bạn đã đo được là nó chạy.** Android WebView chỉ
-  có Widevine **L3** — nó không expose đường giải mã trong TEE cho EME, nên máy
-  báo L1 ở tầng thiết bị vẫn chỉ là L3 bên trong WebView. Trần chấp nhận được
-  khác nhau tuỳ máy: trên một máy test, robustness rỗng và `SW_SECURE_CRYPTO`
-  được chấp nhận còn `SW_SECURE_DECODE` bị từ chối với `NotSupportedError`. Để
-  trống là mặc định an toàn.
-- **Nội dung đòi L1 sẽ không phát được**, cấu hình kiểu gì cũng vậy.
-- **Incognito chặn Widevine.** Nó cần device DRM identifier ngay cả ở L3, mà
-  định danh đó là vĩnh viễn và không reset được, nên ứng dụng từ chối trao nó
-  cho site plugin khi đang bật incognito. Người dùng thấy banner giải thích.
-  ClearKey vẫn chạy.
-- **Chương DASH và DRM không tải xuống được.** Fragment đã mã hoá thì vô dụng
-  với sink tải về, nên chương đó bị từ chối ngay từ đầu thay vì tạo ra file hỏng.
-
-Nếu DRM lỗi, warning `It is recommended that a robustness level be specified`
-của Chromium **không** phải nguyên nhân — nó in ra cả khi gọi thành công.
+Có thể chuẩn bị phụ đề trước khi phát hoặc thêm sau; các track đã chuẩn bị được giữ khi player mount lại. Track lỗi được log và bỏ qua, không reject toàn bộ thao tác addSubtitles.
 
 ## Các thẻ meta đặc biệt
 
-Dùng các trường `ChapterContent.noCache`, `noPrefetch`, `type`; plugin Nekori không phát `no-cache-marker`, `no-prefetch-marker` hoặc `lnreader-chapter-type`. Chỉ adapter legacy đọc chúng. Các thẻ video bên dưới vẫn nằm trong `ChapterContent.html`.
-
-| Thẻ | Tác dụng |
+| Metadata | Ý nghĩa |
 | --- | --- |
-| `<meta id="lnreader-video-disable-progress" />` | Chương video không lưu tiến độ (ví dụ Live, không có thời điểm kết thúc). Player chuyển sang skin live, đồng thời chương này cũng không hỗ trợ tải xuống. |
-| `<meta name="lnreader-video-poster" content="…" />` | Ảnh tĩnh hiện trước khi phát. |
-| `<meta name="lnreader-video-thumbnails" content="…" />` | File WebVTT storyboard cho ảnh preview khi tua. Xem cảnh báo bên dưới. |
+| `meta[name=nekori-video-mode]` | direct hoặc lazy. |
+| `meta[name=nekori-video-type]` | m3u8, mpd, video-file, iframe. |
+| `meta[name=nekori-video-url]` | URL phát trực tiếp; escape giá trị thuộc tính HTML. |
+| `meta#nekori-video-disable-progress` | Tắt lưu tiến độ / skin live; không tải xuống. |
+| `meta[name=nekori-video-poster]` | Poster. |
+| `meta[name=nekori-video-thumbnails]` | Storyboard WebVTT; opt-in này buộc media element dùng anonymous CORS. |
+| `meta[name=nekori-debug-mode]` | true bật overlay debug. |
 
-`lnreader-video-thumbnails` ép `crossorigin="anonymous"` lên media element. Với
-chương `video-file`, điều đó **ép luôn một CORS fetch cho chính video**, nên host
-không trả `Access-Control-Allow-Origin` sẽ ngừng phát. Chỉ dùng với nguồn bạn
-chắc chắn có gửi header CORS.
+State/type/cache/prefetch nằm trong ChapterContent, không dùng marker điều khiển cũ. Chuyển marker offline cũ là trách nhiệm tại bước nạp của app.
 
 ## Captcha và các vấn đề bên lề
 
-Nếu site cho phép, mở WebView để đăng nhập/xác minh. Khi cần tương tác trong reader (như Sáng Tác Việt), trả checkpoint với HTML và hai cờ true như ví dụ parseChapter. Custom JS dùng bridge reader hiện có để xử lý và yêu cầu reload. Checkpoint phải bị tính là lỗi download và không được nối lặp vào infinite reader. API v1 chưa thêm IPC plugin–customJS tổng quát hoặc solver tự động.
+Trả checkpoint với HTML tương tác và noCache/noPrefetch true. CustomJS xác minh rồi gọi window.nekori.refetch(). Electron đồng bộ web storage trước khi yêu cầu chương mới. Không coi checkpoint là chương tải xong hoặc prefetch được. API này không cung cấp solver tự động hay IPC tổng quát giữa plugin và customJS.

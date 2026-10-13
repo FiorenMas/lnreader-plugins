@@ -4,8 +4,8 @@ export async function nativeFetch(
 ): Promise<{ status: number; text: string; headers: Record<string, string> }> {
   // Use reader.fetch if available, otherwise fallback to global fetch
   const fetchFn =
-    window.reader && window.reader.fetch
-      ? window.reader.fetch.bind(window.reader)
+    window.nekori! && window.nekori!.fetch
+      ? window.nekori!.fetch.bind(window.nekori!)
       : fetch;
   // eslint-disable-next-line
   const init: RequestInit = { credentials: 'include', headers };

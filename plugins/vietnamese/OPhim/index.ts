@@ -11,7 +11,8 @@ class OPhimPlugin extends NekoriBasePlugin {
   name = 'OPhim';
   icon = 'icon.png';
   site = 'https://ophim17.cc';
-  version = '1.0.4';
+  version = '1.0.5';
+  minApiVersion = 2;
   apiUrl = 'https://ophim1.com/v1/api';
   contentType = ContentType.VIDEO;
 
@@ -159,9 +160,9 @@ class OPhimPlugin extends NekoriBasePlugin {
       noCache: true,
       noPrefetch: true,
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        `<meta name="lnreader-video-type" content="${isIframe ? 'iframe' : 'm3u8'}">`,
-        `<meta name="lnreader-video-url" content="${videoUrl}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        `<meta name="nekori-video-type" content="${isIframe ? 'iframe' : 'm3u8'}">`,
+        `<meta name="nekori-video-url" content="${videoUrl}">`,
       ].join('\n'),
     };
   }

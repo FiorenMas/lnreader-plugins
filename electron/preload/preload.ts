@@ -22,7 +22,7 @@ const ALLOWED_CHANNELS = [
 ] as const;
 
 // Main -> renderer pushes the renderer is allowed to subscribe to.
-const ALLOWED_EVENTS = ['preview:webstorage'] as const;
+const ALLOWED_EVENTS = ['preview:webstorage', 'preview:refetch'] as const;
 
 contextBridge.exposeInMainWorld('electronAPI', {
   invoke: (channel: string, ...args: unknown[]) => {

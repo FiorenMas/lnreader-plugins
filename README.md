@@ -25,12 +25,12 @@ https://raw.githubusercontent.com/Yuneko-dev/Nekori-plugins/nekori/v1.0.0/.dist/
 ### Additional APIs
 
 Nekori plugins extend `NekoriBasePlugin` or `NekoriPagePlugin` and return structured chapter content.
-See [API v1 documentation](src/nekori/Readme.md) and the templates in `plugins/vietnamese/broken_Template` and `broken_Template2`.
+See [Plugin API documentation](src/nekori/Readme.md) and the templates in `plugins/vietnamese/broken_Template` and `broken_Template2`.
 `@libs/*` provides the LNReader contract; Nekori additions live under `@nekori/*`.
 
 ### Development
 
-**Prerequisites:** Node.js >= 20
+**Prerequisites:** Node.js >= 20. The reader build is copied into this repository; a Nekori checkout is not needed to install or build the dev client.
 
 ```bash
 npm install
@@ -40,7 +40,8 @@ npm run dev
 Build and type-check are independent. The normal preparation pipeline is:
 
 ```bash
-npm run build:prepare          # multisrc, plugin bundles, and plugin assets
+npm run build:reader           # compile the Electron adapter; reader dist is served directly
+npm run build:prepare          # reader, multisrc, plugin bundles, and plugin assets
 npm run build:full             # prepare plus manifest
 npm run build:assets           # copy/bundle plugin-local assets
 npm run build:webviews         # compatibility alias for build:assets

@@ -30,10 +30,11 @@
     "check:sites": "npm run build:plugins && node scripts/check-plugin-sites.js",
     "prepare": "husky",
     "build:assets": "node scripts/build-webviews.js",
-    "build:prepare": "npm run clean:multisrc && npm run build:multisrc && npm run build:plugins && npm run build:assets",
+    "build:prepare": "npm run build:reader && npm run clean:multisrc && npm run build:multisrc && npm run build:plugins && npm run build:assets",
     "test:build": "node scripts/check-plugin-assets.js",
     "check:plugins": "npm run build:prepare && node scripts/check-plugins.js",
-    "test:checks": "node scripts/check-filters.js && node scripts/check-chapter-content.js && node scripts/check-site-probe.js && node scripts/check-plugin-runner.js"
+    "test:checks": "node scripts/check-filters.js && node scripts/check-chapter-content.js && node scripts/check-site-probe.js && node scripts/check-plugin-runner.js",
+    "build:reader": "node scripts/build-reader-client.js"
   },
   "author": "aiko-chan-ai",
   "license": "MIT",

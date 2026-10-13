@@ -28,7 +28,7 @@ const merged = mergeConfig(
       ]),
     ],
 
-    server: { port: 3001, open: false },
+    server: { port: 3001, open: false, watch: { ignored: ['**/.js/**'] } },
   }),
 );
 

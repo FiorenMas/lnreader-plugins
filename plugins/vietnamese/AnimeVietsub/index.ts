@@ -16,8 +16,9 @@ class AnimeVietsubPlugin extends NekoriBasePlugin {
   id = 'animevietsub';
   name = 'AnimeVietsub';
   icon = 'icon.png';
-  site = 'https://animevietsub.li';
-  version = '1.2.1';
+  site = 'https://animevietsub.nl';
+  version = '1.2.2';
+  minApiVersion = 2;
   filters = filters;
   contentType = ContentType.VIDEO;
 
@@ -152,7 +153,10 @@ class AnimeVietsubPlugin extends NekoriBasePlugin {
   // ---------- popularNovels ----------
   async popularNovels(
     pageNo: number,
-    { filters }: Plugin.PopularNovelsOptions<typeof this.filters>,
+    {
+      showLatestNovels,
+      filters,
+    }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
     // Build filters into URL parameters
     const category = filters.category?.value || 'all';
@@ -167,7 +171,10 @@ class AnimeVietsubPlugin extends NekoriBasePlugin {
     const url = new URL(
       `${this.site}/danh-sach/${category}/${genreList}/${season}/${year}/${studio}/${age}/${country}/${page}/`,
     );
-    url.searchParams.set('sort', filters.sort?.value || 'latest');
+    url.searchParams.set(
+      'sort',
+      showLatestNovels ? 'latest' : filters.sort?.value,
+    );
     // Build URL
     // https://animevietsub.li/danh-sach/category/genre_list/season/year/studio/age/country/?sort={value}
     const html = await this.fetchHTML(url.toString());
@@ -492,15 +499,15 @@ class AnimeVietsubPlugin extends NekoriBasePlugin {
     const esc = (s: string) => encodeHtmlEntities(s);
 
     const base: string[] = [
-      `<meta name="lnreader-debug-mode" content="${Boolean(this.enableDebug)}">`,
+      `<meta name="nekori-debug-mode" content="${Boolean(this.enableDebug)}">`,
     ];
 
     if (opts.embedOnly && opts.iframe) {
       return [
         ...base,
-        '<meta name="lnreader-video-mode" content="direct">',
-        '<meta name="lnreader-video-type" content="iframe">',
-        `<meta name="lnreader-video-url" content="${esc(opts.iframe)}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        '<meta name="nekori-video-type" content="iframe">',
+        `<meta name="nekori-video-url" content="${esc(opts.iframe)}">`,
       ].join('\n');
     }
 
@@ -518,7 +525,7 @@ class AnimeVietsubPlugin extends NekoriBasePlugin {
 
     return [
       ...base,
-      '<meta name="lnreader-video-mode" content="lazy">',
+      '<meta name="nekori-video-mode" content="lazy">',
       `<div ${attrs.join(' ')} style="display:none;"></div>`,
     ].join('\n');
   }

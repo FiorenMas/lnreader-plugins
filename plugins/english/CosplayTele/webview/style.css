@@ -3,16 +3,15 @@
   --reader-margin-left: 0px;
 }
 
-#LNReader-chapter p:has(img),
-#LNReader-chapter div:has(img):not(#LNReader-chapter),
-#LNReader-chapter figure {
+#nekori-reader p:has(img),
+#nekori-reader div:has(img):not(#nekori-reader),
+#nekori-reader figure {
   margin: 0 !important;
   padding: 0 !important;
-  line-height: 0 !important;
   display: block !important;
 }
 
-#LNReader-chapter figure {
+#nekori-reader figure {
   width: calc(100% + (var(--readerSettings-padding) * 2)) !important;
   max-width: none !important;
   margin-left: calc(-1 * var(--readerSettings-padding)) !important;
@@ -20,8 +19,8 @@
   overflow: hidden;
 }
 
-#LNReader-chapter figure img,
-#LNReader-chapter img {
+#nekori-reader figure img,
+#nekori-reader img {
   display: block !important;
   width: 100% !important;
   max-width: 100% !important;

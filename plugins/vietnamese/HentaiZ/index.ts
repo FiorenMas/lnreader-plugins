@@ -16,7 +16,7 @@ import { Plugin } from '@/types/plugin';
 
 import filters from './filters';
 
-const SITE = 'https://hentaiz.zone';
+const SITE = 'https://hentaiz.foo';
 const STORAGE_URL = 'https://storage.haiten.org';
 const MIMIX_API = 'https://x.mimix.cc/watch/';
 const EMBED_ORIGIN = 'https://x.haiten.org';
@@ -346,7 +346,8 @@ class HentaiZPlugin extends NekoriBasePlugin {
   name = 'HentaiZ';
   icon = 'icon.png';
   site = SITE;
-  version = '1.1.3';
+  version = '1.1.4';
+  minApiVersion = 2;
   contentType = ContentType.VIDEO;
   contentWarning = ContentWarning.NSFW;
 
@@ -746,25 +747,23 @@ class HentaiZPlugin extends NekoriBasePlugin {
   }): string {
     const esc = (s: string) => encodeHtmlEntities(s);
 
-    const base: string[] = [
-      `<meta name="lnreader-debug-mode" content="false">`,
-    ];
+    const base: string[] = [`<meta name="nekori-debug-mode" content="false">`];
 
     if (opts.iframe) {
       return [
         ...base,
-        '<meta name="lnreader-video-mode" content="direct">',
-        '<meta name="lnreader-video-type" content="iframe">',
-        `<meta name="lnreader-video-url" content="${esc(opts.iframe)}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        '<meta name="nekori-video-type" content="iframe">',
+        `<meta name="nekori-video-url" content="${esc(opts.iframe)}">`,
       ].join('\n');
     }
 
     if (opts.m3u8) {
       return [
         ...base,
-        '<meta name="lnreader-video-mode" content="direct">',
-        '<meta name="lnreader-video-type" content="m3u8">',
-        `<meta name="lnreader-video-url" content="${esc(opts.m3u8)}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        '<meta name="nekori-video-type" content="m3u8">',
+        `<meta name="nekori-video-url" content="${esc(opts.m3u8)}">`,
       ].join('\n');
     }
 
@@ -779,7 +778,7 @@ class HentaiZPlugin extends NekoriBasePlugin {
 
     return [
       ...base,
-      '<meta name="lnreader-video-mode" content="lazy">',
+      '<meta name="nekori-video-mode" content="lazy">',
       `<div ${attrs.join(' ')} style="display:none;"></div>`,
     ].join('\n');
   }

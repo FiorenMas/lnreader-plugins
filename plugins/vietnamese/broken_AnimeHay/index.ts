@@ -12,7 +12,8 @@ class AnimeHayPlugin extends NekoriBasePlugin {
   name = '🎞 AnimeHay';
   icon = 'src/vi/animehay/icon.png';
   site = 'https://animevietsub.ac'; // 'https://animehay.fm';
-  version = '1.0.1';
+  version = '1.0.2';
+  minApiVersion = 2;
 
   imageRequestInit: Plugin.ImageRequestInit = {
     headers: {
@@ -255,9 +256,9 @@ class AnimeHayPlugin extends NekoriBasePlugin {
       state: 'ready',
       type: 'novel',
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        `<meta name="lnreader-video-type" content="${videoType}">`,
-        `<meta name="lnreader-video-url" content="${videoUrl}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        `<meta name="nekori-video-type" content="${videoType}">`,
+        `<meta name="nekori-video-url" content="${videoUrl}">`,
       ].join('\n'),
     };
   }

@@ -5,7 +5,7 @@ export function initUtils(container: HTMLElement) {
 }
 
 export function debugLog(msg: string) {
-  window.LNReaderPlayer!.log(msg);
+  window.nekori!.player!.log(msg);
 }
 
 export function showError(msg: string) {

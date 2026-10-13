@@ -65,7 +65,8 @@ class OneDrivePlugin extends NekoriBasePlugin {
   name = 'OneDrive';
   icon = 'icon.png';
   site = 'https://onedrive.live.com';
-  version = '1.0.3';
+  version = '1.0.4';
+  minApiVersion = 2;
   contentType = ContentType.VIDEO;
 
   pluginSettings: Plugin.PluginSettings = {
@@ -500,9 +501,9 @@ class OneDrivePlugin extends NekoriBasePlugin {
       noCache: true,
       noPrefetch: true,
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        '<meta name="lnreader-video-type" content="video-file">',
-        `<meta name="lnreader-video-url" content="${this.escapeAttribute(url)}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        '<meta name="nekori-video-type" content="video-file">',
+        `<meta name="nekori-video-url" content="${this.escapeAttribute(url)}">`,
       ].join('\n'),
     };
   }

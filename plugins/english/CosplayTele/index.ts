@@ -173,7 +173,8 @@ class CosplayTelePlugin extends NekoriBasePlugin {
   name = 'CosplayTele';
   icon = 'icon.png';
   site = SITE;
-  version = '1.1.0';
+  version = '1.1.1';
+  minApiVersion = 2;
   contentType = ContentType.MIXED;
   contentWarning = ContentWarning.NSFW;
 
@@ -333,7 +334,7 @@ class CosplayTelePlugin extends NekoriBasePlugin {
       const embedJson = encodeHtmlEntities(JSON.stringify(embeds));
       return {
         html: [
-          '<meta name="lnreader-video-mode" content="lazy">',
+          '<meta name="nekori-video-mode" content="lazy">',
           `<div id="cosplaytele-player" data-embeds="${embedJson}" style="display:none"></div>`,
         ].join('\n'),
         state: 'ready',

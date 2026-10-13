@@ -12,7 +12,8 @@ class PhimFunPlugin extends NekoriBasePlugin {
   name = 'PhimFun';
   icon = 'icon.png';
   site = 'https://phimfun.net';
-  version = '1.0.4';
+  version = '1.0.5';
+  minApiVersion = 2;
   contentType = ContentType.VIDEO;
 
   imageRequestInit: Plugin.ImageRequestInit = {
@@ -247,9 +248,9 @@ class PhimFunPlugin extends NekoriBasePlugin {
       noCache: true,
       noPrefetch: true,
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        `<meta name="lnreader-video-type" content="${isIframe ? 'iframe' : 'm3u8'}">`,
-        `<meta name="lnreader-video-url" content="${videoUrl}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        `<meta name="nekori-video-type" content="${isIframe ? 'iframe' : 'm3u8'}">`,
+        `<meta name="nekori-video-url" content="${videoUrl}">`,
       ].join('\n'),
     };
   }

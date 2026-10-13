@@ -16,7 +16,8 @@ class AnimeVsubPlugin extends NekoriBasePlugin {
   name = 'AnimeVsub';
   icon = 'icon.png';
   site = SITE;
-  version = '1.0.4';
+  version = '1.0.5';
+  minApiVersion = 2;
   contentType = ContentType.VIDEO;
 
   filters = {
@@ -209,9 +210,9 @@ class AnimeVsubPlugin extends NekoriBasePlugin {
       noCache: true,
       noPrefetch: true,
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        `<meta name="lnreader-video-type" content="${type}">`,
-        `<meta name="lnreader-video-url" content="${encodeHtmlEntities(streamUrl)}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        `<meta name="nekori-video-type" content="${type}">`,
+        `<meta name="nekori-video-url" content="${encodeHtmlEntities(streamUrl)}">`,
       ].join('\n'),
     };
   }

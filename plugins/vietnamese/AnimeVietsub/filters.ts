@@ -292,7 +292,7 @@ export default {
   sort: {
     type: FilterTypes.Picker,
     label: 'Sắp xếp',
-    value: 'latest',
+    value: 'view',
     options: [
       { label: 'Mới nhất', value: 'latest' },
       { label: 'Tên A-Z', value: 'nameaz' },

@@ -12,7 +12,8 @@ class YeuAnimePlugin extends NekoriBasePlugin {
   name = 'Yêu Anime';
   icon = 'icon.png';
   site = 'https://yeuanime.buzz';
-  version = '1.0.5';
+  version = '1.0.6';
+  minApiVersion = 2;
   contentType = ContentType.VIDEO;
 
   imageRequestInit: Plugin.ImageRequestInit = {
@@ -527,9 +528,9 @@ class YeuAnimePlugin extends NekoriBasePlugin {
       noCache: true,
       noPrefetch: true,
       html: [
-        '<meta name="lnreader-video-mode" content="direct">',
-        `<meta name="lnreader-video-type" content="${isIframe ? 'iframe' : 'm3u8'}">`,
-        `<meta name="lnreader-video-url" content="${primaryVideoUrl}">`,
+        '<meta name="nekori-video-mode" content="direct">',
+        `<meta name="nekori-video-type" content="${isIframe ? 'iframe' : 'm3u8'}">`,
+        `<meta name="nekori-video-url" content="${primaryVideoUrl}">`,
       ].join('\n'),
     };
   }

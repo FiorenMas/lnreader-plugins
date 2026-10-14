@@ -3588,7 +3588,6 @@ function createChapterElements(document2, chapter) {
   const divider = document2.createElement("div");
   divider.classList.add(CHAPTER_DIVIDER_CLASS);
   divider.setAttribute("aria-hidden", "true");
-  divider.style.cssText = "visibility:hidden;height:0;margin:0;padding:0;border:none;";
   setMetadata(divider, chapter);
   return { element, divider };
 }
@@ -3634,6 +3633,7 @@ function initializeInitialContent(root, config) {
   if (!chapter) {
     if (config.mode === "error" && !config.initialContent) return;
     const nodes = createChapterElements(root.ownerDocument, chapterMetadata(config.chapter));
+    nodes.divider.style.cssText = "visibility:hidden;height:0;margin:0;padding:0;border:none;";
     if (config.initialContent) applyProcessedContent(root.ownerDocument, nodes.element, config.initialContent);
     appendChapter(root, nodes);
     return;

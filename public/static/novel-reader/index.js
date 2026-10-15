@@ -1270,7 +1270,7 @@ async function writeResponseToSink(response, sink, totalBytes, signal) {
       void reader.cancel();
     };
     signal?.addEventListener("abort", cancel, { once: true });
-    while (true) {
+    for (; ; ) {
       try {
         if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
         const result = await reader.read();
@@ -2289,7 +2289,8 @@ function registerSelectionCommands(host) {
     }),
     host.onCommand("selection.blur", () => {
       host.root.ownerDocument.getSelection()?.removeAllRanges();
-      host.root.ownerDocument.activeElement instanceof HTMLElement && host.root.ownerDocument.activeElement.blur();
+      const activeElement = host.root.ownerDocument.activeElement;
+      if (activeElement instanceof HTMLElement) activeElement.blur();
     })
   ];
 }
@@ -3124,8 +3125,7 @@ function createInlineFeedback(root, host, layout) {
     clear();
     const payload = normalizePayload(value);
     const chapter = payload.presentation === "boundary" ? resolveBoundary(root, host, payload.chapterId) : null;
-    let feedbackHost;
-    feedbackHost = createFeedbackHost(document2, payload, host, reflow, () => {
+    const feedbackHost = createFeedbackHost(document2, payload, host, reflow, () => {
       if (current === feedbackHost) {
         feedbackHost.remove();
         current = null;

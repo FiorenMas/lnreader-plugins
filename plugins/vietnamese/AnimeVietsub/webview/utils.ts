@@ -17,6 +17,7 @@ export function escapeAttr(s: string) {
 }
 
 export function cleanupIframe(iframe: HTMLIFrameElement) {
+  const overlay = iframe.closest<HTMLElement>('[data-avs-challenge-overlay]');
   try {
     iframe.src = 'about:blank';
   } catch (e) {
@@ -24,7 +25,8 @@ export function cleanupIframe(iframe: HTMLIFrameElement) {
   }
   setTimeout(function () {
     try {
-      iframe.remove();
+      if (overlay) overlay.remove();
+      else iframe.remove();
     } catch (e) {
       //
     }

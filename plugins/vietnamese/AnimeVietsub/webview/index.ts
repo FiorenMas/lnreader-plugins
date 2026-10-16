@@ -11,19 +11,11 @@ void window
     const AVS_TS_SYNC_CHAIN = 8;
     const AVS_MAX_PREFIX = 4096;
 
-    /** Find MPEG-TS sync after a fake PNG header and return the payload from that offset. */
-    function stripAvsPng(ab: ArrayBuffer): ArrayBuffer {
+    /** Find a wrapped MPEG-TS payload by its packet sync chain. */
+    function stripAvsWrapper(ab: ArrayBuffer): ArrayBuffer {
       try {
         const u8 = new Uint8Array(ab);
-        if (u8.length < 4) return ab;
-        if (
-          u8[0] !== 0x89 ||
-          u8[1] !== 0x50 ||
-          u8[2] !== 0x4e ||
-          u8[3] !== 0x47
-        ) {
-          return ab;
-        }
+        if (u8.length < AVS_TS_PACKET * AVS_TS_SYNC_CHAIN) return ab;
         const max = Math.min(u8.length, AVS_MAX_PREFIX);
         for (let i = 0; i <= max; i++) {
           if (u8[i] !== AVS_TS_SYNC) continue;
@@ -36,10 +28,19 @@ void window
             }
           }
           if (ok) {
-            debugLog('[AVS] PNG strip prefix=' + i + '/' + u8.length);
-            return u8.slice(i).buffer;
+            if (i > 0) {
+              debugLog('[AVS] wrapper strip prefix=' + i + '/' + u8.length);
+              return u8.slice(i).buffer;
+            }
+            return ab;
           }
         }
+        debugLog(
+          '[AVS] TS sync not found head=' +
+            Array.from(u8.slice(0, 12))
+              .map(value => value.toString(16).padStart(2, '0'))
+              .join(' '),
+        );
         return ab;
       } catch {
         return ab;
@@ -58,7 +59,10 @@ void window
       );
     }
 
-    async function fetchMedia(url: string): Promise<ArrayBuffer> {
+    async function fetchMedia(
+      url: string,
+      signal?: AbortSignal,
+    ): Promise<ArrayBuffer> {
       const isLocal = /^(blob:|data:)/i.test(url);
       // docs/core-player: blob/data → window.fetch; http → reader.fetch
       const fetchFn = isLocal
@@ -70,6 +74,7 @@ void window
           : fetch;
       const res = await fetchFn(url, {
         credentials: 'include',
+        signal,
         headers: isLocal
           ? undefined
           : {
@@ -77,6 +82,9 @@ void window
               'User-Agent': getAvsUa(),
             },
       });
+      if (!res.ok) {
+        throw new Error('HTTP ' + res.status + ' for ' + url.slice(0, 120));
+      }
       return res.arrayBuffer();
     }
 
@@ -93,6 +101,8 @@ void window
         this.context = null;
         // @ts-ignore
         this.aborted = false;
+        // @ts-ignore
+        this.controller = null;
         // @ts-ignore
         this.stats = {
           aborted: false,
@@ -116,6 +126,10 @@ void window
         this.aborted = true;
         // @ts-ignore
         this.stats.aborted = true;
+        // @ts-ignore
+        if (this.controller) this.controller.abort();
+        // @ts-ignore
+        this.controller = null;
       };
       // @ts-ignore
       AvsFragmentLoader.prototype.getResponseData = function (xhr: any) {
@@ -129,17 +143,22 @@ void window
       ) {
         const self = this;
         self.context = context;
+        self.aborted = false;
+        self.stats.aborted = false;
+        self.controller = new AbortController();
         const url = (context && context.url) || '';
         const t0 = performance.now();
         self.stats.loading.start = t0;
         self.stats.aborted = false;
         debugLog('[AVS] frag GET ' + String(url).slice(0, 90));
 
-        fetchMedia(url)
+        fetchMedia(url, self.controller.signal)
           .then(buf => {
             if (self.aborted) return;
+            self.controller = null;
             self.stats.loading.first = performance.now();
             self.stats.loading.end = performance.now();
+            self.stats.chunkCount = 1;
             if (isPlaylistUrl(url, context)) {
               const text = new TextDecoder().decode(buf);
               self.stats.loaded = text.length;
@@ -152,10 +171,24 @@ void window
               );
               return;
             }
-            const clean = stripAvsPng(buf);
+            // EXT-X-BYTERANGE: AES-128 data sits after the PNG header; hls.js decrypts it.
+            const ranged =
+              typeof context.rangeStart === 'number' ||
+              typeof context.rangeEnd === 'number';
+            const clean = ranged
+              ? buf.slice(
+                  context.rangeStart || 0,
+                  typeof context.rangeEnd === 'number'
+                    ? context.rangeEnd
+                    : buf.byteLength,
+                )
+              : stripAvsWrapper(buf);
             debugLog(
               '[AVS] frag bytes=' +
                 buf.byteLength +
+                (ranged
+                  ? ' range=' + context.rangeStart + '-' + context.rangeEnd
+                  : '') +
                 ' clean=' +
                 clean.byteLength,
             );
@@ -170,6 +203,7 @@ void window
           })
           .catch((err: any) => {
             if (self.aborted) return;
+            self.controller = null;
             debugLog(
               '[AVS] frag fail ' + String(err && err.message).slice(0, 80),
             );
@@ -235,7 +269,7 @@ void window
       throw new Error('Thiếu thông tin cấu hình video.');
     }
 
-    async function renderMedia(resolved: ResolvedMedia, config: PlayerConfig) {
+    async function renderMedia(resolved: ResolvedMedia) {
       // @ts-ignore
       if (!window.nekori!.player) return;
       // @ts-ignore
@@ -251,7 +285,7 @@ void window
           /\.m3u8(\?|$)/i.test(file);
         if (isHls) {
           debugLog('[AVS] playHls ' + file.slice(0, 72));
-          // docs.md: hlsJsConfig → Hls constructor. fLoader only (PNG-strip).
+          // docs.md: hlsJsConfig → Hls constructor. fLoader slices BYTERANGE.
           await player.playHls(file, {
             fLoader: createAvsFragmentLoader(),
             xhrSetup: (xhr: any, url: string) => {
@@ -293,17 +327,14 @@ void window
 
       try {
         const resolved = await resolveMedia(config);
-        await renderMedia(resolved, config);
+        await renderMedia(resolved);
       } catch (error: any) {
         debugLog('Pipeline error: ' + (error && error.message));
         showError(error.message || 'Lỗi giải mã video.');
         // Fallback: site iframe player when decrypt/playback fails.
         if (config.iframeSrc) {
           debugLog('Fallback: site iframe player.');
-          await renderMedia(
-            { type: 'iframe', iframeUrl: config.iframeSrc },
-            config,
-          );
+          await renderMedia({ type: 'iframe', iframeUrl: config.iframeSrc });
         }
       }
     }

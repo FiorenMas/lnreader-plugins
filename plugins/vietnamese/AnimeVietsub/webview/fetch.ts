@@ -1,12 +1,23 @@
+function getFetch(): typeof fetch {
+  // Use reader.fetch if available, otherwise fallback to global fetch
+  return window.nekori! && window.nekori!.fetch
+    ? window.nekori!.fetch.bind(window.nekori!)
+    : fetch;
+}
+
+export async function nativeFetchBytes(
+  url: string,
+  headers?: Record<string, string>,
+): Promise<{ status: number; bytes: Uint8Array }> {
+  const r = await getFetch()(url, { credentials: 'include', headers });
+  return { status: r.status, bytes: new Uint8Array(await r.arrayBuffer()) };
+}
+
 export async function nativeFetch(
   url: string,
   headers?: Record<string, string>,
 ): Promise<{ status: number; text: string; headers: Record<string, string> }> {
-  // Use reader.fetch if available, otherwise fallback to global fetch
-  const fetchFn =
-    window.nekori! && window.nekori!.fetch
-      ? window.nekori!.fetch.bind(window.nekori!)
-      : fetch;
+  const fetchFn = getFetch();
   // eslint-disable-next-line
   const init: RequestInit = { credentials: 'include', headers };
 

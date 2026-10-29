@@ -1,3 +1,4 @@
+import { gcm } from '@libs/aes';
 import { defaultCover } from '@libs/defaultCover';
 import { fetchApi, fetchText } from '@libs/fetch';
 import { Filters, FilterTypes } from '@libs/filterInputs';
@@ -5,7 +6,7 @@ import { NovelStatus } from '@libs/novelStatus';
 import { storage } from '@libs/storage';
 import { NekoriBasePlugin } from '@nekori/plugin';
 import { ContentType } from '@nekori/pluginMetadata';
-import { Buffer, encodeHtmlEntities } from '@nekori/utils';
+import { Buffer, encodeHtmlEntities, NodeCrypto } from '@nekori/utils';
 import { load } from 'cheerio';
 
 import { Plugin } from '@/types/plugin';
@@ -18,7 +19,7 @@ class NguonCPlugin extends NekoriBasePlugin {
   name = 'NguonC';
   icon = 'icon.png';
   site = SITE;
-  version = '1.1.1';
+  version = '1.2.0';
   minApiVersion = 2;
   customJS = 'player.js';
   contentType = ContentType.VIDEO;
@@ -113,15 +114,28 @@ class NguonCPlugin extends NekoriBasePlugin {
   } satisfies Filters;
 
   pluginSettings: Plugin.PluginSettings = {
-    enableEmbed: {
+    playMode: {
+      value: 'm3u8',
+      label: 'Chế độ phát',
+      type: 'Select',
+      options: [
+        { label: 'm3u8 (giải mã)', value: 'm3u8' },
+        { label: 'Embed (iframe)', value: 'embed' },
+      ],
+    },
+    enableDebug: {
       value: false,
-      label: 'Bật embed',
+      label: 'Bật debug',
       type: 'Switch',
     },
   };
 
-  get enableEmbed() {
-    return storage.get('enableEmbed') as boolean;
+  get playMode(): string {
+    return (storage.get('playMode') as string) || 'm3u8';
+  }
+
+  get enableDebug(): boolean {
+    return storage.get('enableDebug') as boolean;
   }
 
   // ---------- helpers ----------
@@ -242,15 +256,19 @@ class NguonCPlugin extends NekoriBasePlugin {
     }
 
     const chapters: Plugin.ChapterItem[] = [];
-    if (movie.episodes && movie.episodes.length > 0) {
-      const server = movie.episodes[0];
+    for (let srvIdx = 0; srvIdx < (movie.episodes || []).length; srvIdx++) {
+      const server = movie.episodes[srvIdx];
+      const serverName =
+        server.server_name || server.name || `Server ${srvIdx + 1}`;
       for (let idx = 0; idx < (server.items || []).length; idx++) {
         const ep = server.items[idx];
         const epNum = parseFloat(ep.name);
         chapters.push({
           name: `Tập ${ep.name}`,
-          path: `${novelPath}/${ep.slug}`,
-          chapterNumber: Number.isFinite(epNum) ? epNum : idx + 1,
+          path: `${novelPath}/${srvIdx}/${ep.slug}`,
+          chapterNumber:
+            (Number.isFinite(epNum) ? epNum : idx + 1) + srvIdx / 10,
+          page: serverName,
         });
       }
     }
@@ -262,46 +280,145 @@ class NguonCPlugin extends NekoriBasePlugin {
   // ---------- parseChapter ----------
 
   async parseChapter(chapterPath: string): Promise<Plugin.ChapterContent> {
-    const lastSlash = chapterPath.lastIndexOf('/');
-    const movieSlug = chapterPath.substring(0, lastSlash);
-    const epSlug = chapterPath.substring(lastSlash + 1);
+    // path: <movieSlug>/<serverIdx>/<epSlug> (new) or <movieSlug>/<epSlug> (legacy)
+    const parts = chapterPath.split('/');
+    const movieSlug = parts[0];
+    let serverIdx: number | null = null;
+    let epSlug: string;
+    if (parts.length >= 3) {
+      serverIdx = parseInt(parts[1], 10);
+      epSlug = parts.slice(2).join('/');
+    } else {
+      epSlug = parts[parts.length - 1];
+    }
 
     const url = `${API_BASE}/film/${movieSlug}`;
     const data = await this.fetchJson(url);
     const movie = data.movie;
 
-    if (movie?.episodes) {
+    const findEp = (server: any) =>
+      (server?.items || []).find((ep: any) => ep.slug === epSlug);
+
+    let ep: any = null;
+    if (serverIdx !== null && movie?.episodes?.[serverIdx]) {
+      ep = findEp(movie.episodes[serverIdx]);
+    }
+    if (!ep && movie?.episodes) {
       for (const server of movie.episodes) {
-        for (const ep of server.items || []) {
-          if (ep.slug === epSlug) {
-            return {
-              state: 'ready',
-              type: 'video',
-              noCache: true,
-              noPrefetch: true,
-              html: await this.buildPlayerHtml({
-                m3u8: ep.m3u8,
-                embed: ep.embed || '',
-              }),
-            };
-          }
-        }
+        ep = findEp(server);
+        if (ep) break;
       }
+    }
+
+    if (ep) {
+      return {
+        state: 'ready',
+        type: 'video',
+        noCache: true,
+        noPrefetch: true,
+        html: await this.buildPlayerHtml({
+          m3u8: ep.m3u8,
+          embed: ep.embed || '',
+        }),
+      };
     }
     throw new Error('Không tìm thấy dữ liệu tập phim này');
   }
 
-  async getM3u8DataFromEmbed(url: string) {
-    const html = await fetchText(url);
+  // ---------- streamc embed: bootstrap flow ----------
+  //
+  // The embed page embeds <script id="stream-bootstrap">{"api": "..."}</script>.
+  // POST {action:"bootstrap",...} to that api returns an AES-GCM sealed
+  // envelope {format:"aesgcm-v1",iv,data}; the key is
+  // sha256("stream-bootstrap-v1\n"+apiHref) and the same bytes are the AAD.
+  // The opened payload carries a short-lived preissued playlist URL plus the
+  // video hash. The playlist itself is another AES-GCM envelope
+  // (#ENC-AESGCM;iv=..) keyed by HMAC-SHA256("stream-derive-v1", videoHash).
+
+  private openBootstrapEnvelope(
+    envelope: { format?: string; iv?: string; data?: string },
+    apiHref: string,
+  ): any {
+    if (
+      envelope?.format !== 'aesgcm-v1' ||
+      !envelope.iv ||
+      !envelope.data ||
+      !/^[a-f0-9]{24}$/i.test(envelope.iv)
+    ) {
+      throw new Error('bad_bootstrap_envelope');
+    }
+    const aad = new TextEncoder().encode(`stream-bootstrap-v1\n${apiHref}`);
+    const key = NodeCrypto.createHash('sha256').update(aad).digest();
+    const plain = gcm(
+      new Uint8Array(key),
+      this.hexToBytes(envelope.iv),
+      aad,
+    ).decrypt(new Uint8Array(Buffer.from(envelope.data, 'base64')));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  private hexToBytes(hex: string): Uint8Array {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+      out[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return out;
+  }
+
+  async getStreamDataFromEmbed(embedUrl: string): Promise<{
+    playlist?: string;
+    videoHash?: string;
+    dataObf?: string;
+  }> {
+    const embedOrigin = new URL(embedUrl).origin;
+    const html = await fetchText(embedUrl, {
+      headers: { Referer: this.site + '/' },
+    });
     const $ = load(html);
-    const div = $('#player');
-    const dataObf = div.attr('data-obf')!;
-    const obf = JSON.parse(Buffer.from(dataObf, 'base64').toString()) as {
-      sUb: string;
-      hD: string;
-      kX?: string;
-    };
-    return { hD: obf.hD, dataObf };
+
+    // New flow: <script id="stream-bootstrap">{"api": "..."}</script>
+    const bootstrapRaw = $('#stream-bootstrap').first().text().trim();
+    if (bootstrapRaw) {
+      const meta = JSON.parse(bootstrapRaw);
+      const apiHref = meta?.api;
+      if (!apiHref || new URL(apiHref).origin !== embedOrigin) {
+        throw new Error('bootstrap api không hợp lệ');
+      }
+      const res = await fetchApi(apiHref, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: embedOrigin,
+          Referer: embedUrl,
+        },
+        body: JSON.stringify({
+          action: 'bootstrap',
+          referrer: this.site + '/',
+          frame_origins: [this.site],
+          request_grant: true,
+          playlist_format: 'aesgcm-v2',
+          pretty_url: true,
+          path_chunks: true,
+          bootstrap_format: 'aesgcm-v1',
+        }),
+      });
+      if (!res.ok) throw new Error('bootstrap_failed: HTTP ' + res.status);
+      const envelope = await res.json();
+      const opened =
+        envelope?.format === 'aesgcm-v1'
+          ? this.openBootstrapEnvelope(envelope, apiHref)
+          : envelope;
+      const playlist = opened?.preissued?.playlist;
+      const videoHash =
+        opened?.video || new URL(embedUrl).searchParams.get('hash') || '';
+      if (playlist) return { playlist, videoHash };
+      throw new Error('bootstrap không trả về playlist');
+    }
+
+    // Legacy flow: #player[data-obf] base64 → {sUb, hD}
+    const dataObf = $('#player').attr('data-obf');
+    if (dataObf) return { dataObf };
+    throw new Error('Không tìm thấy dữ liệu player trên trang embed');
   }
 
   // ---------- buildPlayerHtml ----------
@@ -310,24 +427,33 @@ class NguonCPlugin extends NekoriBasePlugin {
     m3u8?: string;
     embed?: string;
   }): Promise<string> {
-    const metas: string[] = ['<meta name="nekori-debug-mode" content="false">'];
+    const esc = (s: string) => encodeHtmlEntities(s);
+    const metas: string[] = [
+      `<meta name="nekori-debug-mode" content="${Boolean(this.enableDebug)}">`,
+    ];
 
-    if (this.enableEmbed) {
+    if (this.playMode === 'embed') {
       metas.push(
         '<meta name="nekori-video-mode" content="direct">',
         '<meta name="nekori-video-type" content="iframe">',
+        `<meta name="nekori-video-url" content="${esc(opts.embed || '')}">`,
       );
-      metas.push(
-        `<meta name="nekori-video-url" content="${encodeHtmlEntities(opts.embed)}">`,
-      );
-    } else {
-      metas.push('<meta name="nekori-video-mode" content="lazy">');
-      const iframeObf = await this.getM3u8DataFromEmbed(opts.embed!);
-      const attrs: string[] = ['id="nguonc-player-container"'];
-      attrs.push(`data-iframe="${encodeHtmlEntities(opts.embed)}"`);
-      attrs.push(`data-obf="${encodeHtmlEntities(iframeObf?.dataObf || '')}"`);
-      metas.push(`<div ${attrs.join(' ')} style="display:none;"></div>`);
+      return metas.join('\n');
     }
+
+    metas.push('<meta name="nekori-video-mode" content="lazy">');
+    let stream: Awaited<ReturnType<typeof this.getStreamDataFromEmbed>> = {};
+    try {
+      stream = await this.getStreamDataFromEmbed(opts.embed!);
+    } catch (e) {
+      console.warn('[NguonC] stream bootstrap failed:', e);
+    }
+    const attrs: string[] = ['id="nguonc-player-container"'];
+    attrs.push(`data-iframe="${esc(opts.embed || '')}"`);
+    if (stream.playlist) attrs.push(`data-playlist="${esc(stream.playlist)}"`);
+    if (stream.videoHash) attrs.push(`data-hash="${esc(stream.videoHash)}"`);
+    if (stream.dataObf) attrs.push(`data-obf="${esc(stream.dataObf)}"`);
+    metas.push(`<div ${attrs.join(' ')} style="display:none;"></div>`);
 
     return metas.join('\n');
   }

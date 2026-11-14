@@ -1,18 +1,19 @@
-/* eslint-disable no-useless-escape */
-
-import { load as parseHTML } from 'cheerio';
-import { fetchApi, fetchText } from '@libs/fetch';
-import { Plugin } from '@/types/plugin';
-import { NovelStatus } from '@libs/novelStatus';
 import { defaultCover } from '@libs/defaultCover';
+import { fetchApi, fetchText } from '@libs/fetch';
+import { NovelStatus } from '@libs/novelStatus';
 import { storage } from '@libs/storage';
-import { get, set, setFromResponse, removeSessionCookies } from '@libs/cookie';
-import { decodeHtmlEntities, encodeHtmlEntities } from '@libs/utils';
-import { solveCloudflareTurnstile } from '@libs/webview';
+import { get, set, setFromResponse } from '@nekori/cookie';
+import { NekoriBasePlugin } from '@nekori/plugin';
+import { decodeHtmlEntities, encodeHtmlEntities } from '@nekori/utils';
+/* eslint-disable no-useless-escape */
+import { load as parseHTML } from 'cheerio';
+
+import { Plugin } from '@/types/plugin';
+
+import { ABT_HOSTS, HOST_PATTERNS, looksLikeExternalUrl } from './ExternalURL';
 import filters from './filters';
-import { STVChapterError } from './STVError';
-import { HOST_PATTERNS, ABT_HOSTS, looksLikeExternalUrl } from './ExternalURL';
 import { applyNameEngine } from './nameEngine';
+import { STVChapterError } from './STVError';
 
 const SITE = 'https://sangtacviet.app';
 
@@ -102,6 +103,77 @@ function decodeGlyphs(text: string): string {
 }
 
 // ── Content normalization  ─────────────────
+function preprocess(path: string, str: string, bookhost: string): string {
+  if (str.indexOf('chat-') >= 0) {
+    return str;
+  }
+  if (bookhost === 'sangtac' || bookhost === 'dich') {
+    str = str.replace(/<[^i\/]/g, '&gt;').replace(/[\n]+/g, '<br><br>');
+    str = str.replace(/ ([,\.!\?:”]+)/g, '$1');
+    if (bookhost == 'sangtac') {
+      str = str.replace(/\[\[([^[\]]*)\]\]/g, function (match, encoded) {
+        return `<img src="${encoded
+          .split('-')
+          .map(Number)
+          .map((n: number) => String.fromCharCode(n))
+          .join('')}">`;
+      });
+      return str;
+    }
+  }
+  if (bookhost == 'fanqie') {
+    str = str.replace(/.volumePicture.*?\}[^\w]+\}/s, '');
+  }
+  str = str.replace(/<\/p>\r\n<p>/g, '<br><br>');
+  if (path.indexOf('ciweimao') > 0) {
+    str = str.replace(/<span>.*?<\/span>/g, '');
+    str = str.replace(
+      /<img src="(.*?)".*?>/g,
+      '<img referrerpolicy="no-referrer" src="$1">',
+    );
+  }
+  if (bookhost == 'fanqie') {
+    str = str.replace(/<\/?article>/g, '');
+    str = str.replace(/_i_/g, '~');
+  }
+
+  str = str.replace(/đạo ?<\/i>:/g, 'nói</i>:');
+  str = str.replace(/&nbsp;&nbsp;&nbsp;&nbsp;/g, '<br>');
+  str = str.replace(/\n/g, '<br>');
+  str = str.replace(/(\w) \./g, '$1.');
+  str = str.replace(/((\w\.{1}[ \t])|(\w[!?]+(”|】)?))/g, '$1<br><br>');
+  str = str.replace(/<br( ?\/)?>/gi, '<br><br>');
+  str = str.replace(/(<br>(|\n|\t|\r| )*)+/g, '<br><br>');
+  str = str.replace(/([\w>])“/g, '$1 “');
+  str = str.replace(/(\w)<\/i><br>“/g, '$1</i>.<br>');
+  str = str.replace(/ ”/g, '”');
+  if (path.indexOf('uukanshu') > 0) {
+    str = str.replace(/<div class="ad_content">.*?<\/div>/g, '');
+  }
+  if (path.indexOf('aikanshu') > 0) {
+    str = str.replace(/<img.*?src="\/novel\/images.*?>/g, '');
+  }
+
+  str = str.replace(/<a href=.*?<\/a>/g, '');
+  str = str.replace(/<br><br>([\)” 】!?]+)(<br>|$)/g, '$1$2');
+  str = str.replace(/ ([,’]) /g, '$1 ');
+  str = str.replace(/ ‘ /g, ' ‘');
+  str = str.replace('<a&nbsp;href="http:', '');
+  if (bookhost == 'faloo') {
+    str = str.replace(/<br>/g, '<br>\n');
+    str = str.replace(/<br>\n([^“][^\n“]*?)”<br>/g, '<br>“$1”<br>');
+    str = str.replace(/<br>\n/g, '<br>');
+  }
+  str = str.replace(/<\/p><br><br><p>/g, '<br><br>');
+  str = str.replace(/ ([,\.!\?”]+)/g, '$1');
+  if (bookhost == 'fanqie') {
+    str = str.replace(/src=".*?"/g, function (m) {
+      return m.replace(/<br>/g, '');
+    });
+  }
+  return str.replace('\ufffe', '');
+}
+
 function normalizeChapterHtml(
   host: string,
   raw: string,
@@ -228,17 +300,18 @@ function wrapWithParagraphs(rawText: string): string {
   return htmlResult;
 }
 
-class SangTacVietPlugin implements Plugin.PluginBase {
+class SangTacVietPlugin extends NekoriBasePlugin {
   id = 'sangtacviet';
   name = 'Sáng Tác Việt';
-  icon = 'src/vi/sangtacviet/icon.png';
-  customJS = 'src/vi/sangtacviet/custom.js';
+  icon = 'icon.png';
+  customJS = 'custom.js';
   filters = filters;
 
   get site() {
     return DOMAINS[this.selectedDomain] || SITE;
   }
-  version = '1.0.31';
+  version = '1.1.2';
+  minApiVersion = 2;
   webStorageUtilized = true;
 
   pluginSettings: Plugin.PluginSettings = {
@@ -339,8 +412,45 @@ class SangTacVietPlugin implements Plugin.PluginBase {
       }
     }
 
-    await set(origin, { name: 'transmode', value: transmode });
-    await set(origin, { name: 'foreignlang', value: foreignlang });
+    await this.setHostCookie(origin, 'transmode', transmode);
+    await this.setHostCookie(origin, 'foreignlang', foreignlang);
+  }
+
+  private async removeLegacyDomainCookie(
+    origin: string,
+    name: string,
+  ): Promise<void> {
+    // Android set() adds Domain; expire only that scope, preserving host-only cookies.
+    const accepted = await set(origin, {
+      name,
+      value: '',
+      domain: new URL(origin).hostname,
+      path: '/',
+      expires: '1970-01-01T00:00:00.000Z',
+    });
+    if (!accepted) throw new Error(`Không thể xóa cookie cũ ${name}.`);
+  }
+
+  private async setHostCookie(
+    origin: string,
+    name: string,
+    value: string,
+  ): Promise<void> {
+    await this.removeLegacyDomainCookie(origin, name);
+    const accepted = await setFromResponse(origin, `${name}=${value}; Path=/`);
+    if (!accepted) throw new Error(`Không thể cập nhật cookie ${name}.`);
+  }
+
+  private async applyResponseCookies(
+    origin: string,
+    response: Response,
+  ): Promise<void> {
+    const header = response.headers.get('set-cookie');
+    if (!header) return;
+    for (const cookie of header.split(/,(?=\s*[A-Za-z0-9_-]+=)/)) {
+      const accepted = await setFromResponse(origin, cookie.trim());
+      if (!accepted) throw new Error('Không thể cập nhật cookie từ máy chủ.');
+    }
   }
 
   private async _cookieHeader(origin: string): Promise<Record<string, string>> {
@@ -360,7 +470,7 @@ class SangTacVietPlugin implements Plugin.PluginBase {
     $('a.booksearch').each((_, el) => {
       const href = $(el).attr('href') || '';
       const name = $(el).find('.searchbooktitle').text().trim();
-      const cover = $(el).find('img').attr('src') || defaultCover;
+      const cover = this.fixCoverUrl($(el).find('img').attr('src'));
       if (href && name) {
         novels.push({ name, cover, path: href });
       }
@@ -406,6 +516,13 @@ class SangTacVietPlugin implements Plugin.PluginBase {
     return this.parseNovelsFromHTML(html);
   }
 
+  fixCoverUrl(url: any): string {
+    if (!url) return defaultCover;
+    if (typeof url === 'string' && url.startsWith('http://'))
+      return url.replace(/^http:/, 'https:');
+    return url as string;
+  }
+
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     // Extract host and bookid from path: /truyen/{host}/{sty}/{bookid}/
     const pathParts = novelPath.replace(/^\/|\/$/g, '').split('/');
@@ -443,11 +560,11 @@ class SangTacVietPlugin implements Plugin.PluginBase {
           .replace(/\n{3,}/g, '\n\n')
           .trim();
         novel.genres = (book.category || '').trim();
-        novel.cover = book.thumb
-          ? book.thumb.startsWith('http')
+        novel.cover = this.fixCoverUrl(
+          book.thumb && book.thumb.startsWith('http')
             ? book.thumb
-            : `${this.site}${book.thumb}`
-          : defaultCover;
+            : `${this.site}${book.thumb}`,
+        );
 
         const st = String(book.status || '')
           .trim()
@@ -468,8 +585,9 @@ class SangTacVietPlugin implements Plugin.PluginBase {
           $('meta[property="og:novel:book_name"]').attr('content') ||
           $('#book_name2').text().trim() ||
           'Không có tiêu đề';
-        novel.cover =
-          $('meta[property="og:image"]').attr('content') || defaultCover;
+        novel.cover = this.fixCoverUrl(
+          $('meta[property="og:image"]').attr('content'),
+        );
         novel.author =
           $('meta[property="og:novel:author"]').attr('content') ||
           $('h2').first().text().trim();
@@ -598,7 +716,7 @@ class SangTacVietPlugin implements Plugin.PluginBase {
   }
 
   // @ts-expect-error - public method with auto-retry wrapper
-  async parseChapter(chapterPath: string): Promise<string> {
+  async parseChapter(chapterPath: string): Promise<Plugin.ChapterContent> {
     const maxRetries = this.autoRetry ? 10 : 1;
     let attempt = 0;
     while (attempt < maxRetries) {
@@ -618,7 +736,9 @@ class SangTacVietPlugin implements Plugin.PluginBase {
     }
   }
 
-  private async _parseChapter(chapterPath: string): Promise<string> {
+  private async _parseChapter(
+    chapterPath: string,
+  ): Promise<Plugin.ChapterContent> {
     // Path: /truyen/{host}/{sty}/{bookid}/{chapterId}/
     const pathParts = chapterPath.replace(/^\/|\/$/g, '').split('/');
     const bookHost = pathParts[1] || '';
@@ -628,38 +748,22 @@ class SangTacVietPlugin implements Plugin.PluginBase {
 
     const origin = new URL(this.site).origin;
 
-    // Step 0: clear session cookies but preserve translation preference.
-    const oldCookies = await get(origin);
-    for (const k in oldCookies) {
-      await set(origin, { name: k, value: '' });
-    }
-    await removeSessionCookies();
-
-    // Set translation cookies BEFORE Step 1 so the server sees them
-    // on the very first request (session creation).
+    // Remove stale plugin-created _ac without clearing login or CAPTCHA sessions.
+    await this.removeLegacyDomainCookie(origin, '_ac');
     await this.applyTranslationCookies(origin);
 
-    // Step 1: prime the session — sends translation cookies with the GET.
-    try {
-      const pageRes = await fetchApi(referer, {
-        headers: { ...(await this._cookieHeader(origin)) },
-      });
-      const html = await pageRes.text();
-      const firstCookies = this.extractCookiesFromHtml(html);
-      for (const k in firstCookies) {
-        await set(origin, {
-          name: k,
-          value: firstCookies[k],
-        });
-      }
-      if (pageRes.headers.get('set-cookie')) {
-        await setFromResponse(origin, pageRes.headers.get('set-cookie')!);
-      }
-    } catch {
-      // continue — server may still recognise the WebView's cookie jar
+    const pageRes = await fetchApi(referer, {
+      headers: { ...(await this._cookieHeader(origin)) },
+    });
+    if (!pageRes.ok) {
+      throw new Error(`Không thể tải trang chương (HTTP ${pageRes.status}).`);
+    }
+    await this.applyResponseCookies(origin, pageRes);
+    const firstCookies = this.extractCookiesFromHtml(await pageRes.text());
+    for (const [name, value] of Object.entries(firstCookies)) {
+      await this.setHostCookie(origin, name, value);
     }
 
-    // Re-apply translation cookies in case Step 1's Set-Cookie overwrote them.
     await this.applyTranslationCookies(origin);
 
     const apiUrl = new URL(`${this.site}/index.php`);
@@ -671,14 +775,8 @@ class SangTacVietPlugin implements Plugin.PluginBase {
     apiUrl.searchParams.set('sty', '1');
     apiUrl.searchParams.set('exts', '');
 
-    // Step 2: probe POST that rotates `_ac`.
-    // The browser sends the current `_ac` cookie value as the POST body.
-    // Sending an empty body triggers the anti-bot heuristic (code 21).
-    try {
-      const jar = await get(origin);
-      const acValue =
-        (jar._ac && (typeof jar._ac === 'string' ? jar._ac : jar._ac.value)) ||
-        '';
+    // Only a fresh page token needs rotation; code 7 is normal for this probe.
+    if (firstCookies._ac) {
       const probeRes = await fetchApi(apiUrl.toString(), {
         method: 'POST',
         headers: {
@@ -687,17 +785,15 @@ class SangTacVietPlugin implements Plugin.PluginBase {
           Referer: referer,
           ...(await this._cookieHeader(origin)),
         },
-        body: acValue,
+        body: firstCookies._ac,
       });
-      await probeRes.text();
-      if (probeRes.headers.get('set-cookie')) {
-        await setFromResponse(origin, probeRes.headers.get('set-cookie')!);
+      if (!probeRes.ok) {
+        throw new Error(`Không thể khởi tạo chương (HTTP ${probeRes.status}).`);
       }
-    } catch {
-      // probe is best-effort; carry on
+      await probeRes.text();
+      await this.applyResponseCookies(origin, probeRes);
     }
 
-    // Step 3: actual chapter fetch using the rotated cookies.
     const chapRes = await fetchApi(apiUrl.toString(), {
       method: 'POST',
       headers: {
@@ -707,6 +803,12 @@ class SangTacVietPlugin implements Plugin.PluginBase {
       },
       body: this.forceFetch ? 'rescan=true&k=' : '',
     });
+    if (!chapRes.ok) {
+      throw new Error(
+        `Không thể tải nội dung chương (HTTP ${chapRes.status}).`,
+      );
+    }
+    await this.applyResponseCookies(origin, chapRes);
     const data = this.parseLooseJson(await chapRes.text());
     if (!data) {
       throw new Error(
@@ -716,55 +818,29 @@ class SangTacVietPlugin implements Plugin.PluginBase {
     if (String(data.code) === '0' && data.data) {
       const host = data.bookhost || bookHost;
       const rawData = this.removeSystemMessageFromChapterContent(
-        String(data.data),
+        preprocess(chapterPath, String(data.data), host),
       );
       const applyName = this.autoName && this.translateEnabled;
       const content = normalizeChapterHtml(host, rawData, applyName);
       const title = data.chaptername?.trim();
-      return (title ? `<h2>${title}</h2>` : '') + wrapWithParagraphs(content);
+      return {
+        state: 'ready',
+        type: 'novel',
+        html:
+          (title ? `<h2>${title}</h2>` : '') +
+          wrapWithParagraphs(content).replace(/http:\/\//g, 'https://'),
+      };
     } else {
       console.warn('Unexpected chapter API response', data);
       switch (String(data.code)) {
         case '21': {
-          // return "<div id='captcha-placeholder'></div><meta id='no-cache-marker'/><meta id='no-prefetch-marker'/>";
-          // Test Cloudflare Captcha
-          try {
-            const captchaToken = await solveCloudflareTurnstile(
-              `${this.site}${chapterPath}`,
-              '0x4AAAAAABVjME7NHipdnj-c',
-            );
-            if (!captchaToken) {
-              throw new Error('Captcha solving failed or was cancelled.');
-            }
-            const body = new URLSearchParams();
-            body.set('ajax', 'verifycaptcha');
-            body.set('token', captchaToken);
-            body.set('purpose', 'read');
-            body.set('provider', 'cloudflare');
-            // Verify the captcha token with the server
-            const respCaptcha = await fetchApi(
-              `${this.site}/index.php?ngmar=verifyca`,
-              {
-                headers: {
-                  accept: '*/*',
-                  'accept-language': 'vi',
-                  'content-type': 'application/x-www-form-urlencoded',
-                  pragma: 'no-cache',
-                  referer: `${this.site}${chapterPath}`,
-                },
-                body: body.toString(),
-                method: 'POST',
-              },
-            );
-            console.log(
-              'Captcha verification response:',
-              await respCaptcha.text(),
-            );
-            return this._parseChapter(chapterPath); // Retry after captcha
-          } catch (e) {
-            console.error('Captcha solving error:', e);
-            return "<div id='captcha-placeholder'></div><meta id='no-cache-marker'/><meta id='no-prefetch-marker'/>";
-          }
+          return {
+            state: 'checkpoint',
+            type: 'novel',
+            noCache: true,
+            noPrefetch: true,
+            html: "<div id='captcha-placeholder'><p id='removed'>Bạn đã gặp captcha! Đây là placeholder, nếu captcha không xuất hiện, bạn cần tải lại trang để hiện captcha!</p></div>",
+          };
         }
         default: {
           throw new STVChapterError(Number(data.code), data);
@@ -829,9 +905,9 @@ class SangTacVietPlugin implements Plugin.PluginBase {
             const b = infoJson.book;
             name = (b.tname || b.name || name).trim();
             if (b.thumb) {
-              cover = b.thumb.startsWith('http')
-                ? b.thumb
-                : `${this.site}${b.thumb}`;
+              cover = this.fixCoverUrl(
+                b.thumb.startsWith('http') ? b.thumb : `${this.site}${b.thumb}`,
+              );
             }
           }
         } catch {
